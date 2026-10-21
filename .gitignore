@@ -1,0 +1,8 @@
+# Test and verification scratch directories
+.tmp-tests/
+verify/
+node_modules/
+*.log
+
+# Local machine configuration must never be committed
+github-sync.json

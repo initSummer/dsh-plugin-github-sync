@@ -1,0 +1,54 @@
+{
+  "name": "dsh-plugin-github-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sync DeepSeek Harness settings, conversations, workspaces and skills across devices through a private GitHub repository",
+  "license": "MIT",
+  "author": "initSummer",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/initSummer/dsh-plugin-github-sync.git"
+  },
+  "homepage": "https://github.com/initSummer/dsh-plugin-github-sync#readme",
+  "bugs": {
+    "url": "https://github.com/initSummer/dsh-plugin-github-sync/issues"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib/**/*.js",
+    "bin/**/*.mjs",
+    "scripts/**/*.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "docs/**"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": "0.2.1-rc.2"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:unit": "node test/unit/core.test.mjs",
+    "test:e2e": "node test/e2e/sync.test.mjs",
+    "install:profile": "node scripts/install.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "sync",
+    "github"
+  ]
+}

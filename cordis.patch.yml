@@ -1,0 +1,15 @@
+# dsh-plugin-github-sync bundle patch.
+#
+# This row is inserted into the profile configuration tree when the package is
+# listed in `dsh.profile.bundles` of the profile package.json.
+#
+# Machine-specific options (repository URL, device name, path mappings, ...)
+# deliberately live OUTSIDE this synced file, in `$DSH_HOME/github-sync.json`,
+# so that syncing `cordis.patch.yml` between devices never overwrites the
+# per-device configuration. Anything under `config:` here is treated as a
+# default that the local JSON file may override.
+- insert:
+    - id: github-sync
+      name: dsh-plugin-github-sync
+      config:
+        enabled: true
