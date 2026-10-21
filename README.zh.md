@@ -18,7 +18,7 @@
 [Environment]::SetEnvironmentVariable('DSH_SYNC_GITHUB_TOKEN', 'github_pat_xxxxxxxx', 'User')
 
 # 2) 安装插件（用 DSH Desktop 自带的 dsh 垫片，路径见下文；也可用「插件」页安装本地路径）：
-dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+dsh plugin --profile desktop add link:<插件目录>
 
 # 3) 完全退出并重启 DSH Desktop，然后在对话里执行：
 /sync init https://github.com/<you>/dsh-sync.git
@@ -159,14 +159,14 @@ $env:DSH_SYNC_GITHUB_TOKEN = "github_pat_xxxxxxxx"
 
 ## 3. 安装
 
-两种方式任选其一。安装完成后都建议**完全退出并重启 DSH Desktop**。下文以插件目录 `E:\work_with_yan\dsh-plugin-github-sync` 为例，其他设备请替换为实际路径（或使用 Git 仓库地址安装）。
+两种方式任选其一。安装完成后都建议**完全退出并重启 DSH Desktop**。下文以插件目录 `<插件目录>` 为例，其他设备请替换为实际路径（或使用 Git 仓库地址安装）。
 
 ### 3.1 方式 A：桌面「插件」页安装（图形界面）
 
 1. 侧栏打开 **插件** 页 → **添加插件** / **安装第三方插件**。
 2. 输入本地绝对路径：
    ```text
-   E:\work_with_yan\dsh-plugin-github-sync
+   <插件目录>
    ```
    或输入 Git 仓库地址（私有仓库需要可用的 Git 凭据）。
 3. 确认安装成功。该入口只接受声明了 `dsh.bundle.patch` 的 bundle；本插件已在 `package.json` 中声明，安装后会插入行 id 为 `github-sync` 的插件行并自动启用。
@@ -185,13 +185,13 @@ $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations
 $dsh
 
 # 安装（link: 开发链接，不复制代码；file: 复制安装）
-& $dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+& $dsh plugin --profile desktop add link:<插件目录>
 ```
 
 如果 Desktop 已经把 `dsh` 加到 PATH，也可以直接：
 
 ```powershell
-dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+dsh plugin --profile desktop add link:<插件目录>
 ```
 
 注意：
@@ -287,7 +287,7 @@ notepad "$dshHome\github-sync.json"
 注意：
 
 - `repo` 必须是完整 URL（`https://github.com/...`、`git@github.com:...` 或 `ssh://...`），`/sync init` 会校验；不接受 `owner/name` 简写。
-- JSON 里 Windows 路径的反斜杠要写成双反斜杠：`"E:\\work_with_yan"`。
+- JSON 里 Windows 路径的反斜杠要写成双反斜杠：`"E:\\my-workspace"`。
 - `deviceName` 用来区分提交和冲突副本，两台设备请设成不同值（默认取主机名）。
 - 文件保存为 UTF-8 即可（插件会容忍 BOM）。
 
@@ -311,7 +311,7 @@ notepad "$dshHome\github-sync.json"
 等价的 CLI 写法（适合 DSH 未启动或需要脚本化时）：
 
 ```powershell
-cd E:\work_with_yan\dsh-plugin-github-sync
+cd <插件目录>
 $env:DSH_SYNC_GITHUB_TOKEN = "github_pat_xxxxxxxx"
 node bin\dsh-github-sync.mjs init --repo https://github.com/<you>/dsh-sync.git --device workstation-a
 ```
@@ -371,11 +371,11 @@ node bin\dsh-github-sync.mjs init --repo https://github.com/<you>/dsh-sync.git -
 
 ### 5.3 路径不同时：配置 `pathMappings`
 
-A 的工作区在 `E:\work_with_yan`，B 上放在 `D:\wwa`。在 **B** 的 `github-sync.json` 里加：
+A 的工作区在 `E:\my-workspace`，B 上放在 `D:\wwa`。在 **B** 的 `github-sync.json` 里加：
 
 ```json
 "pathMappings": [
-  { "from": "E:\\work_with_yan", "to": "D:\\wwa" }
+  { "from": "E:\\my-workspace", "to": "D:\\wwa" }
 ]
 ```
 
@@ -383,7 +383,7 @@ A 的工作区在 `E:\work_with_yan`，B 上放在 `D:\wwa`。在 **B** 的 `git
 
 - `from` 是**仓库里保存的规范路径**（通常就是 A 的路径），`to` 是 B 本机路径；
 - 可以配置多条；前缀最长者优先；Windows 下大小写不敏感；
-- 也接受对象写法：`{ "E:\\work_with_yan": "D:\\wwa" }`。
+- 也接受对象写法：`{ "E:\\my-workspace": "D:\\wwa" }`。
 
 B 首次同步会先把远端（A）的数据导入本机（同名文件远端优先，覆盖前备份），其中与路径相关的处理是：
 
@@ -400,7 +400,7 @@ B 首次同步会先把远端（A）的数据导入本机（同名文件远端�
 
 ### 5.4 两台设备路径相同
 
-如果 B 上也能使用同一绝对路径（例如同样有 `E:\work_with_yan`，或把内容放到相同路径），则 `pathMappings` 保持 `[]` 即可，插件只做字节复制，风险最低。
+如果 B 上也能使用同一绝对路径（例如同样有 `E:\my-workspace`，或把内容放到相同路径），则 `pathMappings` 保持 `[]` 即可，插件只做字节复制，风险最低。
 
 ### 5.5 日常使用建议
 
@@ -447,7 +447,7 @@ B 首次同步会先把远端（A）的数据导入本机（同名文件远端�
 ### 6.3 独立 CLI
 
 ```powershell
-cd E:\work_with_yan\dsh-plugin-github-sync
+cd <插件目录>
 
 node bin\dsh-github-sync.mjs status                # 查看状态
 node bin\dsh-github-sync.mjs sync                  # 执行一次同步
@@ -502,7 +502,7 @@ node bin\dsh-github-sync.mjs help                  # 用法
 
 ```json
 "pathMappings": [
-  { "from": "E:\\work_with_yan", "to": "D:\\wwa" }
+  { "from": "E:\\my-workspace", "to": "D:\\wwa" }
 ]
 ```
 
@@ -510,7 +510,7 @@ node bin\dsh-github-sync.mjs help                  # 用法
 
 ```json
 "pathMappings": {
-  "E:\\work_with_yan": "D:\\wwa"
+  "E:\\my-workspace": "D:\\wwa"
 }
 ```
 
@@ -759,7 +759,7 @@ DSH 的会话日志是“向文件末尾追加 zstd 帧”。如果 A、B 同时
 | 备份 | `%USERPROFILE%\.dsh\github-sync\backups\<时间戳>\` |
 | 冲突副本 | `%USERPROFILE%\.dsh\github-sync\conflicts\<时间戳>\` |
 | 仓库内冲突副本 | `.dsh-sync/conflicts/<device>/<时间戳>/` |
-| 插件目录 | `E:\work_with_yan\dsh-plugin-github-sync` |
+| 插件目录 | `<插件目录>` |
 | Desktop dsh 垫片 | `%APPDATA%\DSH Desktop\host-commands\desktop\generations\<hash>\bin\dsh.cmd` |
 | 查看快照历史 | `git -C "$env:USERPROFILE\.dsh\github-sync\repo" log --oneline -20` |
 | 状态 | `/sync status` 或 `node bin\dsh-github-sync.mjs status` |

@@ -19,7 +19,7 @@ Full documentation (Chinese): [README.zh.md](README.zh.md) · [installation](doc
 [Environment]::SetEnvironmentVariable('DSH_SYNC_GITHUB_TOKEN', 'github_pat_xxxxxxxx', 'User')
 
 # 2) Install the plugin (Desktop's bundled dsh shim; plugin page also works)
-dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+dsh plugin --profile desktop add link:<插件目录>
 
 # 3) Fully restart DSH Desktop, then in a conversation:
 /sync init https://github.com/<you>/dsh-sync.git
@@ -55,7 +55,7 @@ The other device therefore needs its own DSH login and model-provider keys.
 Sidebar **Plugins** → **Add plugin** → enter the local absolute path:
 
 ```text
-E:\work_with_yan\dsh-plugin-github-sync
+<插件目录>
 ```
 
 (or a Git URL). The package declares `dsh.bundle.patch`, so it is installed as a bundle and enabled automatically. Restart DSH.
@@ -65,7 +65,7 @@ E:\work_with_yan\dsh-plugin-github-sync
 ```powershell
 $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations" -Recurse -Filter dsh.cmd |
   Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
-& $dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+& $dsh plugin --profile desktop add link:<插件目录>
 ```
 
 Use the Desktop shim, not the npm `dsh` CLI: the npm CLI refuses `--profile desktop`. `link:` links the source, `file:` copies it.
@@ -92,7 +92,7 @@ For a device where the workspace lives at a different path:
 ```json
 {
   "pathMappings": [
-    { "from": "E:\\work_with_yan", "to": "D:\\wwa" }
+    { "from": "E:\\my-workspace", "to": "D:\\wwa" }
   ]
 }
 ```

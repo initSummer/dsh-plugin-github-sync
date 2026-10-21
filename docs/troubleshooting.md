@@ -14,7 +14,7 @@ $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { "$env:USERPROFILE\.dsh" }
 2. 在插件目录运行 CLI 自检：
 
    ```powershell
-   cd E:\work_with_yan\dsh-plugin-github-sync
+   cd <插件目录>
    node bin\dsh-github-sync.mjs doctor
    node bin\dsh-github-sync.mjs status
    ```
@@ -184,7 +184,7 @@ Git 认证失败。请为这台设备配置 GitHub 凭据，任选其一：
 2. 修正 B 的 `github-sync.json`：
    ```json
    "pathMappings": [
-     { "from": "E:\\work_with_yan", "to": "D:\\wwa" }
+     { "from": "E:\\my-workspace", "to": "D:\\wwa" }
    ],
    "rewriteSessionPaths": true,
    "createMissingWorkspaceDirs": true
@@ -334,7 +334,7 @@ git -C "$dshHome\github-sync\repo" revert <bad-commit>
    ```powershell
    $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations" -Recurse -Filter dsh.cmd |
      Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
-   & $dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+   & $dsh plugin --profile desktop add link:<插件目录>
    ```
 
 ---
@@ -363,7 +363,7 @@ git -C "$dshHome\github-sync\repo" revert <bad-commit>
 ```powershell
 $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations" -Recurse -Filter dsh.cmd |
   Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
-& $dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+& $dsh plugin --profile desktop add link:<插件目录>
 ```
 
 完全重启 DSH；先 `/sync status` 再 `/sync sync` 验证。`link:` 安装修改代码后重启即可；`package.json` 的 `main`/`exports` 变更需要重新安装。

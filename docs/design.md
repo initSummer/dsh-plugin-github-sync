@@ -261,9 +261,9 @@
 
 `rewritePathText` 同时匹配四种写法：
 
-- 原始路径（`E:\work_with_yan`）；
-- JSON 转义写法（`E:\\work_with_yan`）；
-- 正斜杠写法（`E:/work_with_yan`）；
+- 原始路径（`E:\my-workspace`）；
+- JSON 转义写法（`E:\\my-workspace`）；
+- 正斜杠写法（`E:/my-workspace`）；
 - JSON 转义 + 正斜杠。
 
 Windows 下大小写不敏感；替换按路径长度从长到短匹配，避免短前缀先替换。这会同时覆盖 `header.cwd`、`tool/result.meta.cwd/path`、`tool/call.arguments`、`user/message` 运行上下文、`assistant/message` 文本等事件数据中的绝对路径。

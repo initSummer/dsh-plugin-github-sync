@@ -107,7 +107,7 @@ $DSH_HOME/github-sync.json
 
 说明：
 
-- JSON 中 Windows 路径必须转义：`"E:\\work_with_yan"`；
+- JSON 中 Windows 路径必须转义：`"E:\\my-workspace"`；
 - 文件保存为 UTF-8 即可（读取时会去掉 BOM）；
 - 修改后不需要重新安装插件。除 `auto.*` 外的字段在下一次同步/状态查询时生效。
 
@@ -192,7 +192,7 @@ $DSH_HOME/github-sync.json
 
 ```json
 "pathMappings": [
-  { "from": "E:\\work_with_yan", "to": "D:\\wwa" }
+  { "from": "E:\\my-workspace", "to": "D:\\wwa" }
 ]
 ```
 
@@ -202,7 +202,7 @@ $DSH_HOME/github-sync.json
 - 也接受对象写法：
 
   ```json
-  "pathMappings": { "E:\\work_with_yan": "D:\\wwa" }
+  "pathMappings": { "E:\\my-workspace": "D:\\wwa" }
   ```
 
 - 两条路径都会被规范化为绝对路径并去掉末尾分隔符。
@@ -211,7 +211,7 @@ $DSH_HOME/github-sync.json
 
 ```json
 "pathMappings": [
-  { "from": "E:\\work_with_yan", "to": "D:\\wwa" },
+  { "from": "E:\\my-workspace", "to": "D:\\wwa" },
   { "from": "E:\\other", "to": "D:\\projects\\other" }
 ]
 ```
@@ -235,7 +235,7 @@ $DSH_HOME/github-sync.json
 
 ### 5.4 注意事项
 
-- **首次同步前就配好映射**。否则插件会以为 A 的路径就是本机路径，可能在本机创建 `E:\work_with_yan`（若 `createMissingWorkspaceDirs=true` 且有权限），或导入的会话路径与 B 的实际目录不一致。
+- **首次同步前就配好映射**。否则插件会以为 A 的路径就是本机路径，可能在本机创建 `E:\my-workspace`（若 `createMissingWorkspaceDirs=true` 且有权限），或导入的会话路径与 B 的实际目录不一致。
 - **不要用 junction / symlink 代替映射**：DSH 使用 `realpath` 比对，链接会被解析成真实目标，导致工作区/会话匹配失败。
 - 映射只影响路径，不改会话 id、附件哈希、`parentSession` 链。
 

@@ -2,7 +2,7 @@
 
 本文覆盖：准备账号与工具 → 创建 PAT → 设置环境变量 → 两种安装方式 → 重启验证 → 首次配置 → 升级/卸载。
 
-> 适用于 DSH `0.2.1-rc.2` Desktop（Windows / PowerShell）。插件目录：`E:\work_with_yan\dsh-plugin-github-sync`。
+> 适用于 DSH `0.2.1-rc.2` Desktop（Windows / PowerShell）。插件目录：`<插件目录>`。
 
 ---
 
@@ -108,12 +108,12 @@ ssh -T git@github.com                       # 验证，出现 "successfully auth
 
 ## 4. 安装插件
 
-> 下文以插件目录 `E:\work_with_yan\dsh-plugin-github-sync` 为例；在其他机器上请替换为你实际的插件路径（或使用 Git 仓库地址安装）。
+> 下文以插件目录 `<插件目录>` 为例；在其他机器上请替换为你实际的插件路径（或使用 Git 仓库地址安装）。
 
 安装前确认插件目录存在：
 
 ```powershell
-Test-Path E:\work_with_yan\dsh-plugin-github-sync\package.json   # 应为 True
+Test-Path <插件目录>\package.json   # 应为 True
 ```
 
 ### 4.1 方式 A：桌面「插件」页（图形界面）
@@ -122,7 +122,7 @@ Test-Path E:\work_with_yan\dsh-plugin-github-sync\package.json   # 应为 True
 2. 点击 **添加插件** / **安装第三方插件**。
 3. 输入本地绝对路径：
    ```text
-   E:\work_with_yan\dsh-plugin-github-sync
+   <插件目录>
    ```
    或输入插件的 Git 仓库地址（私有仓库需要先配置可用的 Git 凭据）。
 4. 确认安装。插件在 `package.json` 中声明了 `dsh.bundle.patch`，因此会作为 bundle 安装，并自动把行 id 为 `github-sync` 的插件行加入 profile 并启用。
@@ -141,13 +141,13 @@ $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations
 $dsh
 
 # 安装（link: 为开发链接；file: 会复制安装）
-& $dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+& $dsh plugin --profile desktop add link:<插件目录>
 ```
 
 如果 `dsh` 已在 PATH 上：
 
 ```powershell
-dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+dsh plugin --profile desktop add link:<插件目录>
 ```
 
 关键注意点：
@@ -218,7 +218,7 @@ notepad "$dshHome\github-sync.json"
 ### 5.3 方式三：CLI（DSH 未启动或脚本化）
 
 ```powershell
-cd E:\work_with_yan\dsh-plugin-github-sync
+cd <插件目录>
 $env:DSH_SYNC_GITHUB_TOKEN = "github_pat_xxxxxxxx"
 node bin\dsh-github-sync.mjs init --repo https://github.com/<you>/dsh-sync.git --device workstation-a
 ```
@@ -249,7 +249,7 @@ CLI 与插件共享同一份配置和状态；首次同步完成后再启动 DSH
 - `link:` 安装：更新插件源码 → 完全重启 DSH Desktop（`package.json` 的 `main`/`exports` 变更需要重新安装一次）。
 - `file:` 或 Git 地址安装：重新执行安装命令，或先用 Desktop UI 卸载后再装：
   ```powershell
-  & $dsh plugin --profile desktop add link:E:\work_with_yan\dsh-plugin-github-sync
+  & $dsh plugin --profile desktop add link:<插件目录>
   ```
 - 升级后先执行 `/sync status`，再执行一次 `/sync sync` 验证。
 
