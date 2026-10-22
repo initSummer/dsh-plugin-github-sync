@@ -19,7 +19,7 @@ Near-real-time sync of DeepSeek Harness (DSH) settings, conversation logs, works
 4. 🔴 **Restart DSH once after installing or upgrading the plugin.** The realtime polling/hot-apply wiring is established at plugin load; after that, runtime sync needs no restarts.
 5. 🔴 **Open sessions do not live-refresh, and writing the same session on two devices forks it.** DSH live sessions read the in-memory log only; remote updates are deferred (`pending`) until the session is closed/reopened or DSH restarts. Concurrent writes are not auto-merged; one side is kept and the other whole log is preserved as a conflict copy.
 
-Also not synced: `~/.agents/skills`, project-level `.dsh/skills` / `.agents/skills`, `cache/`, `session_projcache/`, `node_modules/`, `dsh-runtimes/`, `agents-anywhere/`, `players`/media artifacts, `.anonymous-user-id`, and plugin runtime data.
+Also not synced: `~/.agents/skills`, project-level `.dsh/skills` / `.agents/skills`, `cache/`, `session_projcache/`, `node_modules/`, `dsh-runtimes/`, `agents-anywhere/`, DSH home directories outside the managed scopes, `.anonymous-user-id`, and plugin runtime data.
 
 ---
 
@@ -71,7 +71,7 @@ Default-on scopes:
 
 Optional (default off): `projections` (`session_projcache/**`, rebuildable) and `plugins` (profile `package.json` / lockfiles — can change the other device's plugin setup).
 
-Never synced: workspace project files, `.credentials.yaml`, `.anonymous-user-id`, `~/.agents/skills`, project `.dsh/skills` / `.agents/skills`, `cache/`, `session_projcache/`, `node_modules/`, `dsh-runtimes/`, `agents-anywhere/`, `players`/media artifacts, `.dsh-sync/` conflict copies, session locks/temp files.
+Never synced: workspace project files, `.credentials.yaml`, `.anonymous-user-id`, `~/.agents/skills`, project `.dsh/skills` / `.agents/skills`, `cache/`, `session_projcache/`, `node_modules/`, `dsh-runtimes/`, `agents-anywhere/`, DSH home directories outside the managed scopes, `.dsh-sync/` conflict copies, session locks/temp files.
 
 ---
 
