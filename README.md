@@ -1,53 +1,147 @@
 # dsh-plugin-github-sync v0.2.0
 
-Near-real-time sync of DeepSeek Harness (DSH) settings, conversation logs, workspaces, skills and attachments across devices through a **private GitHub repository**.
+Near-real-time sync of DeepSeek Harness (DSH) settings, conversation logs, workspace registries, skills and attachments across devices through a **private GitHub repository**.
 
-- Target: DSH `0.2.1-rc.2` Desktop on Windows (PowerShell).
-- Zero runtime dependencies: a plain ESM Cordis host plugin plus a standalone CLI.
-- Entry points: `/sync` slash command, `github_sync` model tool, `bin/dsh-github-sync.mjs` CLI, and the near-real-time background sync enabled by default.
-- v0.2.0 adds adaptive polling (≈3 s active / ≈15 s idle), ~2 s sync after session writes, and **hot application** of imported workspaces/sessions — no DSH restart needed at runtime.
+- **Version**: `v0.2.0`.
+- **Target**: DSH `0.2.1-rc.2` Desktop on Windows (PowerShell). The plugin is a plain Node ESM Cordis host plugin with no third-party runtime dependencies.
+- **DSH home**: `%USERPROFILE%\.dsh` by default (override with `DSH_HOME`).
+- **Entry points**: `/sync` slash command, `github_sync` model tool, `bin/dsh-github-sync.mjs` CLI, and near-real-time background sync (enabled by default).
 
-> ⚠️ Use a **private** repository. Conversation content, tool output and attachments are uploaded. Credentials (`.credentials.yaml`) are never synced, but conversations may still contain sensitive data.
+> Full Chinese manual: [README.zh.md](README.zh.md) · [installation](docs/installation.md) · [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) · [design](docs/design.md)
 
-Full documentation (Chinese): [README.zh.md](README.zh.md) · [installation](docs/installation.md) · [configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md) · [design](docs/design.md)
+---
+
+## Five warnings
+
+1. 🔴 **Use a private repository.** Conversation text, tool output, attachments and skills are committed to Git history. The plugin does not check repository visibility.
+2. 🔴 **`.credentials.yaml` is never synced.** DSH login state and model API keys stay on the local device; a second device must log in to DSH and configure its own provider keys.
+3. 🔴 **Project files inside workspaces are never synced.** The plugin only projects data under `$DSH_HOME` (workspace registry, session logs, attachments, etc.). Sync project code/files with git, a cloud drive, or another tool.
+4. 🔴 **Restart DSH once after installing or upgrading the plugin.** The realtime polling/hot-apply wiring is established at plugin load; after that, runtime sync needs no restarts.
+5. 🔴 **Open sessions do not live-refresh, and writing the same session on two devices forks it.** DSH live sessions read the in-memory log only; remote updates are deferred (`pending`) until the session is closed/reopened or DSH restarts. Concurrent writes are not auto-merged; one side is kept and the other whole log is preserved as a conflict copy.
+
+Also not synced: `~/.agents/skills`, project-level `.dsh/skills` / `.agents/skills`, `cache/`, `session_projcache/`, `node_modules/`, `dsh-runtimes/`, `agents-anywhere/`, `players`/media artifacts, `.anonymous-user-id`, and plugin runtime data.
 
 ---
 
 ## Quick start
 
 ```powershell
-# 1) Create a private repository (empty is fine), then set a user-level PAT with Contents: Read and write
+# 1) Create a private repository (empty is fine), then set a user-level PAT (skip for SSH)
 [Environment]::SetEnvironmentVariable('DSH_SYNC_GITHUB_TOKEN', 'github_pat_xxxxxxxx', 'User')
 
-# 2) Install the plugin (Desktop's bundled dsh shim; plugin page also works)
+# 2) Install (Desktop's dsh shim; plugin page or scripts/install.mjs also work)
 dsh plugin --profile desktop add link:<plugin-dir>
 
-# 3) Fully restart DSH Desktop once, then in a conversation:
+# 3) Fully restart DSH Desktop once, then:
 /sync init https://github.com/<you>/dsh-sync.git
 ```
 
-On a second device: install, set its own token, configure the same `repo` (plus `pathMappings` if workspace paths differ), sync once, and restart DSH **once after installing/upgrading**. Workspaces and sessions then appear within a few seconds; runtime sync does not require restarts.
+With SSH (recommended for long-term use):
 
-The package also ships `node scripts/install.mjs` (and `npm run install:profile`) to find the Desktop shim and run the install command.
+```text
+/sync init git@github.com:<you>/dsh-sync.git
+```
+
+### 30-second checklist
+
+```powershell
+git --version
+node --version                                  # CLI needs ^22.19.0 || >=24.0.0
+[Environment]::GetEnvironmentVariable('DSH_SYNC_GITHUB_TOKEN', 'User')   # PAT
+ssh -T git@github.com                           # SSH
+Test-Path "$env:USERPROFILE\.dsh\github-sync.json"
+```
+
+In DSH: `/sync help`, `/sync status`, and the `github_sync` tool should be available. If not, fully restart DSH once.
 
 ---
 
 ## What is synchronized
 
-| Scope (default on) | Repository path | Notes |
+Default-on scopes:
+
+| Scope | Repository path | Notes |
 |---|---|---|
 | `settings` | `home/storages/**`, `home/cordis.patch.yml`, `home/cordis.yml`, `profiles/<profileName>/cordis.patch.yml` | Plugin-owned patch rows are filtered out |
-| `sessions` | `home/sessions/**` | zstd JSONL logs; append-only extensions can be merged (strict prefix only) |
-| `workspaces` | `home/storages/workspace.json`, `meta/workspaces.json` | Semantic merge; the sidecar records each workspace's origin device for `wwa · jackfruit` titles |
-| `skills` | `home/skills/**`, `home/AGENTS.md` | User-level skills and global instructions |
+| `sessions` | `home/sessions/**` | zstd JSONL logs; append-only prefix extensions can be merged |
+| `workspaces` | `home/storages/workspace.json`, `meta/workspaces.json` | Semantic merge; sidecar records origin device for `name · device` titles |
+| `skills` | `home/skills/**`, `home/AGENTS.md`, `home/agents.md` | Only user-level skills inside DSH home |
 | `attachments` | `home/attachments/**` | Images/files referenced by sessions |
 | `market` | `home/storages/community_market/global.json`, `sources/**` | Catalog caches are not synced |
 
 Optional (default off): `projections` (`session_projcache/**`, rebuildable) and `plugins` (profile `package.json` / lockfiles — can change the other device's plugin setup).
 
-Never synced: `.credentials.yaml`, `.anonymous-user-id`, `cache/`, `github-sync/` itself, `dsh-runtimes/`, `agents-anywhere/`, `node_modules/`, `.dsh-sync/` conflict copies, session lock/temp files.
+Never synced: workspace project files, `.credentials.yaml`, `.anonymous-user-id`, `~/.agents/skills`, project `.dsh/skills` / `.agents/skills`, `cache/`, `session_projcache/`, `node_modules/`, `dsh-runtimes/`, `agents-anywhere/`, `players`/media artifacts, `.dsh-sync/` conflict copies, session locks/temp files.
 
-The other device therefore needs its own DSH login and model-provider keys.
+---
+
+## Credentials: PAT or SSH
+
+**PAT (HTTPS)**:
+
+- Create a Fine-grained PAT with **Contents: Read and write** (or a classic token with `repo`).
+- Set `DSH_SYNC_GITHUB_TOKEN` as a **user** environment variable and fully restart DSH.
+- `repo` = `https://github.com/<you>/<repo>.git`.
+
+**SSH (recommended)**:
+
+```powershell
+ssh-keygen -t ed25519 -C "dsh-sync" -f "$env:USERPROFILE\.ssh\id_ed25519_dsh"
+ssh-add "$env:USERPROFILE\.ssh\id_ed25519_dsh"
+ssh -T git@github.com
+```
+
+Add the `.pub` as a **Deploy key** (repo Settings → Deploy keys → **Allow write access**) or an account SSH key, then:
+
+```json
+{ "repo": "git@github.com:<you>/<repo>.git" }
+```
+
+If port 22 is blocked, add to `~/.ssh/config`:
+
+```text
+Host github.com
+  HostName ssh.github.com
+  Port 443
+  User git
+  IdentityFile C:\Users\<you>\.ssh\id_ed25519_dsh
+  IdentitiesOnly yes
+```
+
+Windows ACL problems (`Bad owner or permissions on .ssh/config`) are fixed with `icacls` (remove inheritance; grant only the current user + SYSTEM + Administrators). GCM TLS errors such as `安全包中没有可用的凭证` are best bypassed with SSH, or HTTPS + `DSH_SYNC_GITHUB_TOKEN`. See [README.zh.md](README.zh.md) §4 for exact commands.
+
+> SSH remotes do not use the token environment variable. Token values are never written to config, remote URLs or logs.
+
+---
+
+## Installation
+
+### A. Desktop plugin page
+
+Sidebar **Plugins** → **Add plugin** → local absolute path `<plugin-dir>` (or a Git URL). The package declares `dsh.bundle.patch`, so it installs as a bundle and is enabled automatically. Restart DSH.
+
+### B. Desktop `dsh` shim
+
+```powershell
+$dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations" -Recurse -Filter dsh.cmd |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+& $dsh plugin --profile desktop add link:<plugin-dir>
+```
+
+Use the Desktop shim: the npm `dsh` CLI refuses `--profile desktop`.
+
+### C. Install helper
+
+```powershell
+cd <plugin-dir>
+node scripts\install.mjs        # or: npm run install:profile
+```
+
+### After installation
+
+- Fully restart DSH **once** (required after install/upgrade; runtime sync then needs no restarts).
+- Verify: `/sync help`, `/sync status`, the `github_sync` tool, and the plugin entry in the profile `package.json`.
+- Optional: `dsh --profile desktop --dump-config` (may rewrite/initialize the profile; back it up first).
 
 ---
 
@@ -55,17 +149,17 @@ The other device therefore needs its own DSH login and model-provider keys.
 
 Machine-local file: `%USERPROFILE%\.dsh\github-sync.json` (or `$env:DSH_HOME\github-sync.json`). It is never synced.
 
-Minimal configuration:
+Minimum:
 
 ```json
 {
-  "repo": "https://github.com/<you>/dsh-sync.git",
+  "repo": "git@github.com:<you>/dsh-sync.git",
   "branch": "main",
   "deviceName": "workstation-a"
 }
 ```
 
-Near-real-time defaults (all fields optional):
+Realtime defaults (v0.2):
 
 ```json
 {
@@ -81,26 +175,60 @@ Near-real-time defaults (all fields optional):
 }
 ```
 
-- `intervalSeconds` / `idleIntervalSeconds`: active / idle polling (3 s / 15 s).
-- `activeWindowSeconds`: how long after the last session event the plugin stays in active mode (90 s).
-- `pushDebounceSeconds`: sync ~2 s after a session write.
-- `workspaceDeviceLabel`: decorate workspace titles with the origin device (`wwa · jackfruit`).
-- `mergeAppendOnlySessions`: accept the longer log when two session logs are a strict append-only extension of each other.
-- `realtime.enabled: false` falls back to the legacy `auto.intervalMinutes` mode (startup ~15 s, write debounce via `auto.sessionDebounceSeconds`).
+- `realtime.enabled` / `pushDebounceSeconds` are read when the plugin registers its listeners — restart after changing them;
+- the other realtime fields are re-read each round;
+- `realtime.enabled=false` falls back to the legacy `auto.intervalMinutes` mode (startup ~15 s, session debounce via `auto.sessionDebounceSeconds`);
+- workspace titles are decorated as `name · device`; disabling only stops new suffixes (existing ones must be renamed manually);
+- `onConflict` defaults to `keep-local`.
 
-Devices whose workspace lives at a different path:
+Different machine paths:
 
 ```json
 {
   "pathMappings": [
-    { "from": "E:\\my-workspace", "to": "D:\\wwa" }
+    { "from": "E:\\projects\\foo", "to": "D:\\projects\\foo" }
   ]
 }
 ```
 
-`from` is the canonical path stored in the repository (usually the first device's path); `to` is the local path. The plugin creates missing directories, rewrites `workspace.json` paths, session `header.cwd` and path text inside events, and renames the session directory (`--E-work_with_yan--` → `--D-wwa--`).
+`from` is the canonical path stored in the repository (usually the first device's path); `to` is the local path. Create the target directory beforehand. Do not use junctions/symlinks — DSH compares `realpath`.
 
-See [configuration.md](docs/configuration.md) for every field, default, range and precedence rule.
+See [configuration.md](docs/configuration.md) for every field.
+
+---
+
+## Multi-device (A → B)
+
+**A**:
+
+1. Install + restart once.
+2. Configure PAT/SSH.
+3. `/sync init <repo>` (or edit config + `/sync sync`).
+4. Verify `home/`, `profiles/desktop/` and `meta/workspaces.json` in the repository.
+
+**B**:
+
+1. Install + restart once.
+2. Use B's own PAT/SSH.
+3. Configure the same `repo`, a different `deviceName`, and `pathMappings` if paths differ.
+4. Create the mapped target directory.
+5. Run the first sync — remote state is imported before exporting local data.
+6. Restart DSH once after the first sync/path mapping if the sidebar does not settle; v0.2 hot apply normally shows results within seconds.
+7. Subsequent realtime sync needs no restarts.
+
+First-sync merge rules: `workspace.json` semantic merge; patch rows merged by id; other opaque settings default local + remote conflict copy (a fresh DSH home lets remote win); remote sessions imported.
+
+---
+
+## Realtime behavior (v0.2)
+
+- New workspaces/sessions appear on the other device within **3–6 seconds** (polling 3 s active / 15 s idle; ~2 s after session writes).
+- Workspace titles show the origin device (`wwa · jackfruit`), recorded in `meta/workspaces.json`.
+- B operating in A's workspace/session syncs back to A; sessions A has not opened are updated and appear in the list.
+- **Sessions opened on a device are not live-refreshed.** The update is deferred (`pendingSessionIds`, shown in `/sync status`); close/reopen the session or restart DSH.
+- **Same session on two devices at once forks the append-only log.** The plugin merges only strict append-only prefixes; divergent histories keep one side and save the other whole log as a conflict copy. Do not continue the same session on two devices simultaneously.
+- Polling traffic: ~1 KB per empty round, ~3–10 KB per changed round. Git smart HTTP does not consume GitHub's REST 5000/h quota but is subject to secondary rate limits; keep each device at ≤15 polls/minute. Tune intervals or disable `realtime` on a device.
+- Repository history grows roughly 3–7× the raw session bytes due to whole-file zstd snapshots; no LFS built in. Consider periodically switching to a new private repository (update `repo` on **all** devices).
 
 ---
 
@@ -112,55 +240,85 @@ See [configuration.md](docs/configuration.md) for every field, default, range an
 | Model tool | `github_sync` with `action: status \| sync \| init`, plus `repo`, `branch`, `dryRun` |
 | CLI | `node bin\dsh-github-sync.mjs status \| sync [--dry-run] \| init --repo <url> [--branch] [--device] [--profile] \| doctor \| paths` |
 
-`/sync status` shows the realtime mode (active/idle intervals, write debounce), the workspace label setting, and any pending (deferred) live sessions.
+`/sync status` shows the realtime mode (active/idle intervals, write debounce), workspace label setting, and pending live sessions.
 
-A sync runs: poll/fetch + merge (fast-forward when only remote advanced; append-only session extensions accepted) → import into the local home with a **live-session gate** → hot-apply to the running DSH (`workspaceRegistry`, `api-session/*` events) → export + push (retry up to 3 times when another device pushed) → update local state and prune old backups.
+A sync round: fetch/merge (fast-forward when only remote advanced; append-only session extensions accepted) → import with live gate → hot-apply (`workspaceRegistry`, `api-session/*`) → export + push (retry up to 3 times) → update state and prune backups.
 
----
-
-## Near-real-time behavior (v0.2.0)
-
-- **Workspaces and sessions appear without restart.** Imported workspaces are reconciled through the live DSH workspace registry; sessions are pushed to the browser as `api-session/added|activity|removed`. A change on one device normally shows up on the other within 3–6 seconds.
-- **Workspace titles show the origin device** (`wwa · jackfruit`), recorded in `meta/workspaces.json`. Disable with `realtime.workspaceDeviceLabel: false`; this only stops new suffixes — titles that already have one must be renamed manually (set it on all devices).
-- **A session opened on this device is not overwritten.** The live session owns the in-memory log, so the remote update is deferred (`pendingSessionIds`, shown in `/sync status`). Close and reopen the session (or restart DSH) to see it.
-- **Same session on two devices at once** forks the append-only log. The plugin never re-numbers or merges divergent histories: with default `onConflict: "keep-local"` it keeps one side and stores the other whole log as a conflict copy. Avoid continuing the same session on two devices simultaneously.
-- **Append-only merge:** when one log is a strict prefix extension of the other (sync first, continue later), the longer log is taken without conflicts.
-- **Polling/backoff:** active ≈3 s, idle ≈15 s, failures back off exponentially up to 60 s with jitter; a fast path skips the import pass when nothing changed and no session is pending.
-- **Traffic** (rough): ~1 KB per empty poll, ~3–10 KB per changed round. The Git smart-HTTP endpoint does not consume GitHub's REST 5000/h quota, but it is subject to secondary rate limits; keep each device at ≤15 polls/minute (the defaults are far below that).
+`dryRun` / `--dry-run` only plans the export; it does not write the local home or snapshot repository, commit, or push.
 
 ---
 
 ## Conflicts and backups
 
-- Default `onConflict: "keep-local"`: the local version wins; the other side is saved under the repository `.dsh-sync/conflicts/<device>/<timestamp>/`.
-- If a local file changes while the sync is running (DSH still writing), the local version is kept and the remote version is saved to both `$DSH_HOME/github-sync/conflicts/<timestamp>/` and the repository conflict directory.
-- `prefer-remote` selects the remote side for real conflicts (Git merge conflicts and import-stage overwrites), backing up the local file first; `fail` aborts only on real conflicts (useful for strict auditing).
-- `workspace.json` is merged semantically (by workspace id/path); patch files are merged row by row; session logs use the append-only prefix rule above before falling back to the conflict policy.
-- On a device's **first sync**, remote state is imported before exporting: workspaces/patch rows are merged, remote sessions are imported, and other opaque settings follow `onConflict` (a fresh DSH home lets the remote version win after a backup).
-- Local files overwritten or deleted during import are backed up to `$DSH_HOME/github-sync/backups/<timestamp>/` (retained `backup.keepDays`, default 30).
+- `keep-local` (default): local wins; the other side goes to `.dsh-sync/conflicts/<device>/<timestamp>/`.
+- `prefer-remote`: remote wins for real conflicts; local files are backed up first at import stage.
+- `fail`: aborts only on real conflicts (strict auditing).
+- `workspace.json` is merged semantically; patch files are merged row by row; session logs use append-only prefix merging before falling back to the conflict policy.
+- Open sessions are never overwritten; they become pending until closed.
+- Local files overwritten/deleted during import are backed up to `$DSH_HOME/github-sync/backups/<timestamp>/` (retained `backup.keepDays`, default 30). Conflict copies are not auto-pruned.
 
-Restore files by copying them back from the backup/conflict directories while DSH is fully closed. See [troubleshooting.md](docs/troubleshooting.md) for recovery procedures.
-
----
-
-## Security
-
-- Use a private repository only.
-- Tokens are read from environment variables (`DSH_SYNC_GITHUB_TOKEN`, then `GH_TOKEN` / `GITHUB_TOKEN`), passed as a transient Git HTTP header for HTTPS remotes, never written to config/remote/logs, and redacted in errors. SSH remotes use your SSH credentials instead.
-- `.credentials.yaml` and `.anonymous-user-id` are never synced; the second device must log in to DSH and configure model keys itself.
-- The local snapshot repository, backups and conflict copies contain plaintext data copies.
+Restore by copying files back while DSH is fully closed, or use `git revert` on the snapshot repo. See [troubleshooting.md](docs/troubleshooting.md).
 
 ---
 
-## Limitations
+## Security and limitations
 
-- **Restart once after installing/upgrading the plugin.** Runtime sync and hot application then need no restart. In profiles/CLI environments without the workspace/session services, changes fall back to file writes and may need a restart.
-- A **session already open** on a device is not live-refreshed; updates are pending until it is closed and reopened (or DSH restarts).
-- Concurrently continuing the **same session** on two devices forks the log; only strict append-only extensions are merged automatically.
-- Windows long-path limits apply even though `core.longpaths=true` is configured (enable system long-path support).
-- DSH data formats (session v4, workspace v2) may change between DSH releases; the plugin does not version-check imported data.
-- No cross-device lock, no Git LFS, no history compaction; repositories grow over time.
-- No graphical settings UI.
+- Private repository only; conversations/attachments are plaintext (zstd-compressed) in Git history.
+- Tokens are read from environment variables only, passed as a transient HTTP header for HTTPS, never written to config/remote/logs, and redacted in errors.
+- `.credentials.yaml` and `.anonymous-user-id` are never synced; the second device logs in and configures model keys itself.
+- First install/upgrade requires one DSH restart; runtime hot apply needs none.
+- Open sessions are not live-refreshed; same-session concurrent writes fork.
+- No project-file sync, no Git LFS/history compaction, no cross-device lock, no graphical settings UI.
+- DSH data formats (session v4, workspace v2) may change; the plugin does not version-check imported data.
+- Windows long-path support is required for deep paths even with `core.longpaths=true`.
 - Windows + DSH Desktop is the documented environment; macOS/Linux are untested.
 
-For the full Chinese documentation, start with [README.zh.md](README.zh.md); architecture, realtime flow and data-flow details are in [design.md](docs/design.md).
+---
+
+## Appendix: sample config
+
+Replace the account/repository/device name with your own; never put a token in this file.
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "repo": "git@github.com:initSummer/work_with_yan.git",
+  "branch": "main",
+  "deviceName": "jackfruit",
+  "profileName": "desktop",
+  "pathMappings": [],
+  "rewriteSessionPaths": true,
+  "createMissingWorkspaceDirs": true,
+  "onConflict": "keep-local",
+  "realtime": {
+    "enabled": true,
+    "intervalSeconds": 3,
+    "idleIntervalSeconds": 15,
+    "activeWindowSeconds": 90,
+    "pushDebounceSeconds": 2,
+    "workspaceDeviceLabel": true,
+    "mergeAppendOnlySessions": true
+  },
+  "auto": { "startup": true, "intervalMinutes": 10, "sessionDebounceSeconds": 120 },
+  "scopes": {
+    "settings": true, "sessions": true, "workspaces": true,
+    "skills": true, "attachments": true, "market": true,
+    "projections": false, "plugins": false
+  },
+  "backup": { "enabled": true, "keepDays": 30 },
+  "limits": { "maxFileMB": 100, "maxTotalMB": 4096, "maxSessions": 0 },
+  "git": {
+    "path": "git",
+    "timeoutMs": 180000,
+    "tokenEnv": "DSH_SYNC_GITHUB_TOKEN",
+    "fallbackTokenEnvs": ["GH_TOKEN", "GITHUB_TOKEN"],
+    "batchMode": true,
+    "authorName": "DSH GitHub Sync",
+    "authorEmail": "dsh-sync@localhost"
+  },
+  "commit": { "messagePrefix": "dsh-sync" }
+}
+```
+
+For the complete Chinese manual (SSH/ACL/GCM, all troubleshooting cases, detailed field reference), start with [README.zh.md](README.zh.md).
