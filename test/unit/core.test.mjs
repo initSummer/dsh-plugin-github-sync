@@ -22,7 +22,9 @@ import { mergeWorkspaceDocs, validateWorkspaceDoc, emptyWorkspaceDoc } from '../
 import { filterOwnPatchRows, extractOwnPatchRows, appendPatchRows, splitPatchEntries, mergePatchTexts } from '../../lib/patch.js'
 import { initializeConfig } from '../../lib/sync.js'
 import { applyRuntimeUpdates } from '../../lib/runtime.js'
-import { decodeFrames, decodeHeader, makeScratch, makeSessionBytes, removeScratch } from '../helpers.js'
+import { exportLocalToRepo } from '../../lib/snapshot.js'
+import { serializeWorkspaceDoc } from '../../lib/workspace.js'
+import { decodeFrames, decodeHeader, makeConfig, makeScratch, makeSessionBytes, removeScratch } from '../helpers.js'
 
 test('paths: session segment and project keys match the DSH backend', () => {
   assert.equal(encodeSegment('session-66d5e7df'), 'session-66d5e7df')
@@ -402,6 +404,34 @@ test('runtime: hot-applies workspaces and emits client session events', async ()
   assert.ok(calls.some((call) => call[0] === 'attach' && call[1] === 'session-imported'))
   assert.ok(emitted.some(([name, summary]) => name === 'api-session/added' && summary.sessionId === 'session-imported'))
   assert.ok(emitted.some(([name, id]) => name === 'api-session/removed' && id === 'session-gone'))
+})
+
+test('snapshot: exporting does not delete repository workspaces whose local drive is missing', async () => {
+  const root = await makeScratch('preserve-ws')
+  try {
+    const home = path.join(root, 'home')
+    const repoDir = path.join(root, 'repo')
+    const localWorkspace = path.join(root, 'workspace-e')
+    await mkdir(localWorkspace, { recursive: true })
+    const doc = (workspacePath, title, ids) => ({
+      unit: { name: 'workspace', version: 2 },
+      global: { initialized: true, defaultWorkspaceId: ids[0], workspaceIds: ids, archivedSessionIds: [], pinnedSessionIds: [] },
+      tables: { workspaces: Object.fromEntries(ids.map((id) => [id, { path: workspacePath, title, sessionIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' }])) },
+    })
+    await mkdir(path.join(home, 'storages'), { recursive: true })
+    await writeFile(path.join(home, 'storages', 'workspace.json'), serializeWorkspaceDoc(doc(localWorkspace, 'local', ['local-ws'])), 'utf8')
+    await mkdir(path.join(repoDir, 'home', 'storages'), { recursive: true })
+    await writeFile(path.join(repoDir, 'home', 'storages', 'workspace.json'), serializeWorkspaceDoc(doc('F:\\missing-drive\\wwa', 'remote', ['remote-ws'])), 'utf8')
+
+    const config = makeConfig(home, { repo: 'https://example.invalid/repo.git', deviceName: 'device-x' })
+    await exportLocalToRepo({ dshHome: home, config, mapper: new PathMapper([]), repoDir })
+    const exported = JSON.parse(await readFile(path.join(repoDir, 'home', 'storages', 'workspace.json'), 'utf8'))
+    const paths = Object.values(exported.tables.workspaces).map((entry) => entry.path)
+    assert.ok(paths.some((value) => pathKey(value) === pathKey(localWorkspace)), 'local workspace kept')
+    assert.ok(paths.some((value) => value.startsWith('F:\\')), 'remote workspace with missing local drive preserved')
+  } finally {
+    await removeScratch(root)
+  }
 })
 
 test('devices: workspace titles are decorated with and stripped of the origin device', () => {
