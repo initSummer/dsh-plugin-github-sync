@@ -1,8 +1,8 @@
 {
   "name": "dsh-plugin-github-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Sync DeepSeek Harness settings, conversations, workspaces and skills across devices through a private GitHub repository",
+  "description": "Near-realtime multi-device sync for DeepSeek Harness: settings, conversations, workspaces and skills via a private GitHub repository",
   "license": "MIT",
   "author": "initSummer",
   "repository": {

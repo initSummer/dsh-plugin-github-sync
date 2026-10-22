@@ -1,6 +1,6 @@
-# 设计说明
+# 设计说明（v0.2.0）
 
-本文描述 `dsh-plugin-github-sync` 的架构、数据投影、同步算法、冲突模型与已知限制，供维护者和想深入排查的用户阅读。事实以当前代码（`lib/`）与 DSH `0.2.1-rc.2` 的实际数据格式为准。
+本文描述 `dsh-plugin-github-sync` 的架构、数据投影、近实时同步、冲突模型与已知限制，供维护者和想深入排查的用户阅读。事实以当前代码（`lib/`）与 DSH `0.2.1-rc.2` 的实际数据格式为准。
 
 ---
 
@@ -11,13 +11,14 @@
 - 用一个**私有 GitHub 仓库**作为多台设备之间 DSH 数据的传输层；
 - 同步设置、对话记录、工作区注册表、技能、附件；
 - 设备路径不同也能继续历史会话（通过 `pathMappings` 重写路径）；
-- 冲突时不静默丢数据：默认保留本机版本，另一方进入冲突副本；
+- **近实时**：自适应轮询 + 写后触发，导入的工作区/会话通过 DSH 运行时热应用，无需重启；
+- 冲突时不静默丢数据：默认保留本机版本，另一方进入冲突副本；严格追加的会话日志自动采用较长一份；
 - 插件零第三方运行时依赖，纯 ESM，可直接以 `link:` / bundle 方式安装。
 
 ### 非目标
 
-- 不做实时协作/多写者并发合并（同一会话同时继续会分叉）；
-- 不管理 DSH 进程内的 workspace 注册表 API（通过文件投影实现，因此需要重启生效）；
+- 不做多写者并发合并：同一会话两端同时继续会分叉，插件不重编号、不自动拼接；
+- 不提供会话 live reload（DSH live session 只读内存；打开中的会话更新会暂缓）；
 - 不做 Git LFS、历史压缩或 GitHub API 操作；
 - 不提供图形设置页；
 - 不同步凭据、设备身份、运行时和缓存。
@@ -33,16 +34,22 @@
 │    └─ dsh-plugin-github-sync (lib/index.js)                                        │
 │         ├─ /sync 命令        (lib/commands.js)                                     │
 │         ├─ github_sync 工具  (lib/tools.js)                                        │
-│         └─ 后台定时器/会话事件 (lib/index.js)                                       │
+│         └─ 近实时轮询/会话事件 (lib/index.js)                                       │
 │                    │                                                               │
 │                    ▼                                                               │
 │           同步引擎 runSync (lib/sync.js)                                            │
 │             ├─ 配置      lib/config.js                                             │
 │             ├─ 路径映射  lib/paths.js                                               │
-│             ├─ 快照投影  lib/snapshot.js  ←→  lib/sessions.js / lib/workspace.js    │
+│             ├─ 快照投影  lib/snapshot.js  ←→ lib/sessions.js / lib/workspace.js     │
+│             ├─ 设备来源  lib/devices.js                                            │
 │             ├─ patch 行  lib/patch.js                                              │
 │             ├─ Git 封装  lib/git.js                                                │
 │             └─ 本机状态  lib/state.js                                              │
+│                    │                                                               │
+│                    ├──────────────► 运行时热应用 lib/runtime.js                     │
+│                    │                  ├─ workspaceRegistry create/setTitle/attach  │
+│                    │                  │    → domain/changed → workspace/follow     │
+│                    │                  └─ api-session/added|activity|removed        │
 │                    │                                                               │
 │         ┌──────────┴───────────┐                                                   │
 │         ▼                      ▼                                                   │
@@ -53,31 +60,35 @@
 └────────────────────────────────────────────────────────────────────────────────────┘
 
 独立 CLI：bin/dsh-github-sync.mjs → 复用 lib/*（同一配置、状态、快照仓库）
+安装辅助：scripts/install.mjs → 自动查找 Desktop 的 dsh 垫片并执行 add link:
 ```
 
 ### 模块职责
 
 | 模块 | 职责 |
 |---|---|
-| `lib/index.js` | Cordis 插件入口：注册命令/工具、启动自动同步定时器与会话事件监听、清理 disposer |
+| `lib/index.js` | Cordis 插件入口：注册命令/工具、自适应轮询与写后触发、live session 集合收集、运行时热应用回调、清理 disposer |
 | `lib/commands.js` | `/sync [status\|sync\|init\|help]`，输出面向用户的中文结果 |
 | `lib/tools.js` | 模型工具 `github_sync`（`action=status/sync/init`） |
-| `lib/sync.js` | 同步引擎：单飞锁、完整流程编排、Git 冲突处理、状态汇总、`/sync init` 写入配置 |
-| `lib/snapshot.js` | 把本机 home 导出到仓库树、把仓库树导入本机（含备份/安全删除/冲突判定） |
-| `lib/sessions.js` | zstd 帧扫描/解压/重压、读取会话 header、路径文本重写 |
+| `lib/sync.js` | 同步引擎：单飞锁、完整流程编排、Git 冲突处理（含追加合并）、状态汇总、`/sync init` 写入配置 |
+| `lib/snapshot.js` | 把本机 home 导出到仓库树、把仓库树导入本机（备份/安全删除/live 闸门/defer workspace/冲突判定） |
+| `lib/sessions.js` | zstd 帧扫描/解压/重压、读取会话 header、路径文本重写、日志追加/分叉比较 |
 | `lib/workspace.js` | `workspace.json` 解析/序列化/路径映射/语义合并/排除/不变量校验 |
+| `lib/devices.js` | `meta/workspaces.json` 来源设备 sidecar：记录/合并/标题 `base · device` 装饰与剥离 |
+| `lib/runtime.js` | 运行时热应用：workspaceRegistry 对账、api-session 事件推送 |
 | `lib/patch.js` | `cordis.patch.yml` 的按行（按 entry id）处理：剔除本插件自己的行、追加本机行、冲突合并 |
-| `lib/git.js` | Git CLI 封装：非交互环境、token 注入、fetch/merge/push/commit、错误解释与脱敏 |
-| `lib/config.js` | 默认值、配置合并/校验、token 读取、远端 URL 脱敏 |
+| `lib/git.js` | Git CLI 封装：非交互环境、token 注入、fetch/merge（fast-forward/merge）/push/commit、错误解释与脱敏 |
+| `lib/config.js` | 默认值、配置合并/校验、realtime 参数、token 读取、远端 URL 脱敏 |
 | `lib/paths.js` | DSH home/配置/状态/仓库路径、`encodeSegment`/`projectKey`、`PathMapper` |
-| `lib/state.js` | `state.json`：managed 文件表、最近结果、历史 |
+| `lib/state.js` | `state.json`：managed 文件表、pendingSessionIds、mappingKey、最近结果、历史 |
 | `lib/errors.js` | `SyncError` / `SyncConfigError` / `SyncConflictError` |
 | `lib/fsutil.js` | 原子写、哈希、备份、安全遍历、文件占用判断 |
 | `bin/dsh-github-sync.mjs` | 独立 CLI：`status/sync/init/doctor/paths` |
+| `scripts/install.mjs` | 安装辅助：查找 Desktop 的 `dsh.cmd` 并执行 `plugin --profile <p> add link:<本包>` |
 
 ### 运行环境假设
 
-- 插件运行在 DSH host 进程内，拥有 `ctx.tools`、`ctx.commands`（`inject = ['tools','commands']`）；`ctx.sessions` 等通过可选方式使用；
+- 插件运行在 DSH host 进程内，拥有 `ctx.tools`、`ctx.commands`（`inject = ['tools','commands']`）；`sessions`、`workspaceRegistry`、`sessionController` 通过 `ctx.get` 可选读取；
 - 运行环境 Node 需支持 `node:zlib` 的 zstd API（DSH Desktop 自带 Node 24；独立 CLI 要求 `^22.19.0 || >=24.0.0`）；
 - Git 通过 `child_process.execFile` 直接调用（不经 shell），并设置 `GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`、可选 `GIT_SSH_COMMAND=ssh -o BatchMode=yes`。
 
@@ -103,6 +114,8 @@
 ├─ profiles/<profileName>/
 │  ├─ cordis.patch.yml
 │  └─ package.json 等（仅 scopes.plugins）
+├─ meta/
+│  └─ workspaces.json                ← 工作区来源设备 sidecar（标题 `base · device`）
 └─ .dsh-sync/conflicts/<device>/<timestamp>/**   ← 冲突副本，导入时忽略
 ```
 
@@ -121,7 +134,7 @@
 
 ### 3.2 导出时收集什么
 
-`collectLocalEntries` 按 scope 遍历：
+`collectLocalEntries` 按 scope 遍历，并在导出前先调用 `prepareDeviceRegistry`：为本机新工作区在 `meta/workspaces.json` 记录 `originDevice`，再把目标设备来源装饰到 canonical 标题（`wwa · jackfruit`）。
 
 - **sessions**：`sessions/<project>/<session>/session[.vN].jsonl[.zstd]`。读取会话 header（只解第一帧）拿到 `id` 与 `cwd`；按 `cwd` 计算规范路径与 `projectKey`，需要时重写会话内容；
 - **workspaces**：`storages/workspace.json`，路径规范化为仓库路径空间，并按 `excludeWorkspacePaths` 剔除记录；
@@ -136,6 +149,10 @@
 1. 检查大小上限（`limits.maxFileMB`）与总大小上限（`limits.maxTotalMB`）；
 2. 读取内容并转换（workspace 路径规范化、patch 过滤本插件行、会话路径重写）；
 3. 计算 SHA-256，与仓库工作区现有文件比较；不同才写入（原子写）。
+
+实时轮询下，若上一轮的 `hash/localSize/localMtimeMs` 与本次一致（`allowUnchangedSkip`），导出会跳过读取/哈希直接沿用上一轮元数据，降低高频轮询开销；`workspace.json` 始终重新读取（标题/设备标签可能变化）。
+
+`meta/workspaces.json` 由 `prepareDeviceRegistry` 直接写入快照工作区（不属于 scope 投影），随同一提交推送；导入侧通过 `readDeviceRegistry` 读取它来装饰本机标题。
 
 导出还会删除“上一次由本机写入、但本机文件已消失”的仓库文件——但仅当：
 - `state.managed` 中记录该路径的 writer 为 `local`；
@@ -159,38 +176,48 @@
    - 其它文件：按 `home/` / `profiles/` 映射到本地路径，检测“本机在同步期间是否被修改”后决定覆盖/保留/冲突；普通冲突按 `onConflict`：`keep-local` 保留本机 + 远端副本、`prefer-remote` 备份本机 + 采用远端、`fail` 抛错；全新 home 与已有本地数据的默认取舍不同；
 3. 处理删除：仅当 `state.managed` 记录 writer 为 `remote`、且本机文件哈希仍等于上次同步记录时，才删除本机文件；否则保留并告警。
 
+实时导入的两个额外保护：
+
+- **live 闸门**：`liveSessionIds` 由 host 的 `ctx.get('sessions').list()` 提供；命中时跳过该会话文件、记入 `pendingLiveSessionIds` 并写入 `state.pendingSessionIds`，下一轮再试，关闭会话后自动应用。
+- **defer workspace**：host 存在 `workspaceRegistry` 时不直接写 `workspace.json`，只计算合并后的文档（`localWorkspaceDoc`）并置 `workspaceChanged`，交给 `lib/runtime.js` 通过 registry API 写回，避免被运行中 registry 的内存状态覆盖。
+
 首次同步会先做一次**预导入**：当 `detectFreshInstall` 判定本机是全新安装（没有会话、没有已登记工作区、profile patch 没有有效行）时，`preferRemoteUnknown=true` 让本机同名的不透明设置文件以**远端版本为准**（覆盖前备份），避免新设备用本地默认值覆盖远端已有内容；如果本机已有本地数据，则 `workspace.json` 做语义合并、patch 做行 id 合并，其它不透明设置默认保留本机版本并把远端版本写冲突副本（`prefer-remote` 时备份本机后采用远端版本），同时导入远端独有文件。
 
 ### 3.4 备份与冲突副本
 
 - 覆盖/删除本机文件前（`backup.enabled=true`）复制到 `$DSH_HOME/github-sync/backups/<timestamp>/<相对路径>`；
-- 导入阶段发现“本机文件在导出后又被修改”（DSH 正在写）且远端也提供了不同内容时，保留本机版本，把**远端版本**写到：
-  - 本机 `$DSH_HOME/github-sync/conflicts/<timestamp>/<repoRel>`；
-  - 仓库 `.dsh-sync/conflicts/<device>/<timestamp>/<repoRel>`（随提交推送，其他设备可见）。
+- 导入阶段发现“本机文件在导出后又被修改”（DSH 正在写）且远端也提供了不同内容时：
+  - `keep-local`：保留本机版本，把**远端版本**写到本机 `conflicts/<timestamp>/<repoRel>` 与仓库 `.dsh-sync/conflicts/<device>/<timestamp>/<repoRel>`；
+  - `prefer-remote`：先把本机文件备份到 `backups/`，再写入远端版本，记入冲突列表；
+  - `fail`：抛 `SyncConflictError`。
 - Git 合并冲突中未保留的一方只写到仓库冲突副本目录。
+- live 会话不会走到覆盖分支（闸门在更前面），因此不会被备份/冲突逻辑处理。
 - 备份目录按 `backup.keepDays` 清理；冲突副本不自动清理。
 
 ---
 
 ## 4. 同步算法
 
-`runSync` 是单飞（`activeSync` 模块级锁）。一次完整同步（非 dry-run）：
+`runSync` 是单飞（`activeSync` 模块级锁）。一次完整同步（非 dry-run）接收 `liveSessionIds`、`deferWorkspaceFile`、`runtimeApply` 等运行时参数：
 
-1. **读取状态与配置**：`state.json` + `github-sync.json`；`state.managed` 为空时本次视为 `firstSync`；
+1. **读取状态与配置**：`state.json` + `github-sync.json`；`state.managed` 为空时本次视为 `firstSync`；`state.pendingSessionIds` 非空会禁用下面的无变化快路径；
 2. **定位 Git**：`git.path` → `git` → Windows 常见安装路径；
 3. **确保快照仓库**：不存在则 `git init -b <branch>`；设置 `.gitattributes`、`core.*`、remote URL；
 4. **首次/新设备采用远端历史**：如果仓库刚创建或还没有任何提交，先 `fetch`；若远端分支存在，`reset --hard origin/<branch>`，让后续 merge 有共同祖先；
 5. **首次同步预导入**：`firstSync` 时先 `fetch`（必要时 reset 到远端分支），把远端内容导入本机。此时 `workspace.json` 语义合并、patch 按行 id 合并、远端会话按路径映射导入；若 `detectFreshInstall` 判定 home 是全新安装（无会话、无工作区、profile 无有效设置），则不透明设置文件远端优先（覆盖前备份），否则按 `onConflict` 处理（默认保留本机 + 远端副本，`prefer-remote` 备份本机后覆盖）；
-6. **导出 + 提交**：`exportLocalToRepo` → `commitAll`（`dsh-sync[<device>]: export <iso> (+n ~n -n)`）；
+6. **导出 + 提交**：`exportLocalToRepo`（含设备 sidecar/标题装饰）→ `commitAll`（`dsh-sync[<device>]: export <iso> (+n ~n -n)`）；
 7. **fetch + merge**：`fetchRemote`（不带 refspec）；若 `behind > 0` 调 `mergeRemote`：
    - 远端已包含在本机 → 无需动作；
    - 本机落后（仅远端前进）→ `git merge --ff-only origin/<branch>` 快进，worktree 更新；
    - 双方分叉 → `git merge --no-ff --allow-unrelated-histories`；
-8. **解决冲突**：workspace/patch 语义合并；其它文件按 `onConflict`；写冲突副本并 `git add`；提交 `合并远端更改`；
-9. **导入本机**：`importRepoToLocal`（备份/冲突保护/安全删除）；快进或 merge 后的 worktree 已包含远端新文件；
-10. **再次导出 + 提交**：让语义合并后的 workspace/patch 在仓库中规范化（`merge-local`）；
-11. **push**：`git push origin HEAD:refs/heads/<branch>`；非 fast-forward 时重新 fetch/merge/import/export/commit，最多 3 轮；仍失败抛 `PUSH_REJECTED`；
-12. **收尾**：写 `state.json`、清理过期备份。
+8. **解决冲突**：workspace/patch 语义合并；`meta/workspaces.json` 按路径并集合并；`home/sessions/**` 若启用 `mergeAppendOnlySessions` 先做严格追加/前缀比较，较长一方直接采用；其余文件按 `onConflict`；写冲突副本并 `git add`；提交 `合并远端更改`；
+9. **导入本机**：`importRepoToLocal`（备份/冲突保护/安全删除）。会话命中 live 闸门则进入 pending；`workspace.json` 在 registry 存在时只计算文档并 defer，不直接写文件；
+10. **运行时热应用**：`runtimeApply(partialResult)` → `lib/runtime.js`：workspaceRegistry `create/setTitle/attachSession`；新/更新/删除会话分别 emit `api-session/added|activity|removed`；
+11. **再次导出 + 提交**：让语义合并后的 workspace/patch 在仓库中规范化（`merge-local`）；随后把 `meta/workspaces.json` 的 ` · device` 后缀应用到本机工作区标题；
+12. **push**：`git push origin HEAD:refs/heads/<branch>`；非 fast-forward 时重新 fetch/merge/import/export/commit，最多 3 轮；仍失败抛 `PUSH_REJECTED`；
+13. **收尾**：写 `state.json`（含 `pendingSessionIds`、`mappingKey`）、清理过期备份。
+
+“无变化快路径”：非首次同步、无 pending、导出没有写入/删除、HEAD 等于 `state.lastCommit`、远端 ahead/behind 都为 0 时，直接返回 `unchanged`，跳过导入/热应用，适配高频轮询。
 
 失败时（`NOT_CONFIGURED`、`GIT_MISSING`、`SYNC_CONFLICT`、`PUSH_REJECTED`、其它异常）会把错误写入 `state.lastError`，返回结构化结果，摘要以 `❌` 开头；不会抛出到 DSH 的 `session/flush`（后台同步只记日志）。
 
@@ -198,17 +225,26 @@
 
 `runSync({ dryRun: true })` 走独立分支：`planExport` 只读取本机数据并与现有快照工作区比较哈希，返回“将导出 N 个文件、其中 M 个相对当前快照有变化”，**不初始化/修改快照仓库**、不提交、不 fetch/merge/push、不写本机、不改 state。
 
-### 自动同步时机
+### 近实时轮询与热应用（v0.2.0）
 
-插件 `apply` 时读取一次配置并启动：
+`lib/index.js` 的调度器：
 
-- `auto.startup`：加载后 15 秒执行一次（reason=`startup`）；
-- `auto.intervalMinutes`：`setInterval` 周期执行（reason=`timer`）；
-- `auto.sessionDebounceSeconds`：监听 `session/event`（`{global:true}`），首次事件后 120 秒执行一次（reason=`session`）；窗口内后续事件不重复排期；同步完成后的新事件会再次排期；
-- 定时器/监听器在插件 disposer 中清理；`interval.unref()` 不阻止进程退出；
-- 自动同步与手动同步共用 `runSync` 单飞锁；重叠请求返回 `busy/skipped`，不排队；
-- `auto.*` 只在启动时读取，修改需要重载插件/重启 DSH；
-- 没有退出时同步（DSH 退出阶段无法可靠 await 异步同步）。
+- **自适应轮询**：`realtime.enabled=true` 时用 `setTimeout` 链（非 setInterval），每轮结束后计算下一轮延迟：最近 `activeWindowSeconds`（默认 90s）内有 `session/event` → `intervalSeconds`（3s），否则 `idleIntervalSeconds`（15s）；
+- **写后触发**：监听 `session/event`（`{global:true}`）更新时间戳，并按 `pushDebounceSeconds`（2s）重新排期一轮；`realtime.enabled=false` 时改用 `auto.sessionDebounceSeconds`；
+- **失败退避**：`consecutiveFailures > 0` 时延迟 = `base * 2^min(failures,5)`，上限 60s，再乘 0.8–1.2 抖动；成功清零；
+- **启动**：realtime 开启时 `auto.startup ? 5s : intervalSeconds` 后开始；关闭时 legacy 模式启动 15s 并 `setInterval(auto.intervalMinutes)`；
+- **单飞**：`runSync` 有模块级 Promise 锁；轮询/写后/手动/命令/工具共享，重叠返回 busy/skipped；定时器在 disposer 中清理；
+- **live 集合**：每轮调用 `ctx.get('sessions').list()` 收集正在打开的会话 id；
+- **workspace defer**：存在 `ctx.get('workspaceRegistry')` 时让 `importRepoToLocal` 不直接写 `workspace.json`；
+- **热应用回调**：`runtimeApply` 在首次导入、正常导入、push 重试导入后调用；每轮结束后还会再 `applyRuntimeUpdates` 一次（`skipSessions: result.runtimeApplied`）以拾取晚到的标题变更。
+
+`lib/runtime.js`：
+
+- `workspaceRegistry.list()` 建立 path → entity 索引；对合并文档中缺失的工作区 `create(path, title)`，标题变化时 `setTitle(title)`；新会话通过 `attachSession` 挂到所属工作区；
+- registry 变更触发 DSH 的 `domain/changed`，Web 客户端据此走 `workspace/follow` 更新侧栏；
+- 新/更新会话通过 `ctx.emit('api-session/added', summary)` / `('api-session/activity', id, updatedAt)` 推给浏览器；删除用 `api-session/removed`；
+- summary 优先从 `sessionController.list()` 读取；读不到时回退到导入时构造的 `sessionSummaries`，仍读不到则告警“界面将在下次刷新时显示”；
+- 所有集成都是可选的：没有 registry/sessionController/emit 时静默跳过（CLI 环境仍能同步文件）。
 
 ---
 
@@ -233,7 +269,9 @@
 5. 校验失败则**不写入**本机 `workspace.json`，保留本机注册表并告警；
 6. 写入前备份本机文件，原子写 `workspace.json`。
 
-副作用：在 DSH 运行中导入 `workspace.json` 不会立即被 UI 读取；重启 DSH 后才生效，且重启前在 UI 改工作区可能被内存状态覆盖。
+**运行时路径**：host 存在 `workspaceRegistry` 时走 defer：导入只产出 `localWorkspaceDoc`/`workspaceChanged`，由 `lib/runtime.js` 通过 registry API 创建/改标题/挂会话，registry 的 `domain/changed` 驱动 `workspace/follow`，侧栏立即更新，**无需重启**。没有 registry（CLI/最小 profile）时才直接写文件。
+
+**来源设备标签**：`meta/workspaces.json` 是 `{ version, workspaces: { <canonicalPath>: { originDevice, updatedAt } } }` 的 sidecar。导出时为新工作区记录 `config.deviceName`，并在 canonical 标题后追加 ` · <device>`；导入时按 sidecar 装饰本机标题（幂等：先剥离已知/通用 ` · token` 后缀再加）。`realtime.workspaceDeviceLabel=false` 只关闭装饰，sidecar 仍会维护。sidecar 的 Git 冲突按 canonical path 并集合并，local 优先。
 
 ---
 
@@ -270,6 +308,23 @@ Windows 下大小写不敏感；替换按路径长度从长到短匹配，避免
 
 不变量：会话 id、seq、time、事件类型、`parentSession`、附件 `sha256:` 引用等都不改。
 
+### 6.4 追加扩展合并（append-only）
+
+`compareSessionLogs(left, right)` 用于 Git 合并阶段的会话冲突：
+
+1. 字节相等 → `equal`；
+2. 一条是另一条的严格字节前缀（zstd 帧完整，常见于“先同步、后继续”）→ `left-prefix` / `right-prefix`；
+3. 否则逐帧解压、按物理 JSONL 行比较公共前缀；一条是另一条的严格行前缀 → 对应 prefix；
+4. 否则 `diverged`。
+
+`realtime.mergeAppendOnlySessions=true` 时，`resolveConflicts` 对 `home/sessions/**` 的 equal/prefix 直接采用较长一方并 `git add`（prefix 时给出“按时间线合并，保留较长一份”提示）；`diverged` 不自动合并，落入常规 `onConflict` 分支（保留一方 + 另一方整份写入 `.dsh-sync/conflicts/`）。
+
+该逻辑**不重编号**、不拼接两条分叉历史；live 闸门（导入阶段）与它相互独立：live 会话根本不会被覆盖，而是进入 pending。
+
+### 6.5 live 闸门的判定
+
+`importRepoToLocal` 对每个会话读取 header 的 id；若 id 在 `liveSessionIds`（host `sessions.list()`）中，则跳过文件、加入 `pendingLiveSessionIds` 并告警。pending 会持久化到 `state.pendingSessionIds`，并让“无变化快路径”失效，因此每轮都会重试；会话关闭后下一轮自动应用远端日志。新导入/更新的会话 id 会进入 `newSessionIds`/`updatedSessionIds`，用于运行时 `api-session/*` 事件。
+
 ---
 
 ## 7. Patch 文件处理
@@ -287,23 +342,27 @@ Windows 下大小写不敏感；替换按路径长度从长到短匹配，避免
 
 | 阶段 | 触发条件 | 处理 |
 |---|---|---|
-| Git 合并 | 同一文件在两条历史中都被修改 | `workspace.json` / patch 语义合并；其它文件按 `onConflict`：保留一方，另一方写入仓库 `.dsh-sync/conflicts/<device>/<timestamp>/`；`fail` 抛 `SyncConflictError` |
+| Git 合并 | 同一文件在两条历史中都被修改 | `workspace.json` / patch / `meta/workspaces.json` 语义合并；`home/sessions/**` 先做追加/前缀比较，严格扩展直接取较长一方；其余按 `onConflict`：保留一方，另一方写入仓库 `.dsh-sync/conflicts/<device>/<timestamp>/`；`fail` 抛 `SyncConflictError` |
 | 导入 workspace 合并 | 本机与远端都有 `workspace.json` | 语义合并（path/id），本机工作区保留、远端记录并入；不变量校验失败则保留本机 |
 | 导入 patch 合并 | 本机与远端 patch 内容不同 | 按 entry id 合并：远端行为基、本机独有行追加、同 id 按 `onConflict`；`fail` 时保留本机并告警 |
 | 首次同步（全新 home） | `firstSync` 且 `detectFreshInstall` 为真（无会话/无工作区/无有效 profile 设置） | 不透明设置文件远端优先（覆盖前备份）；workspace/patch 仍按上面两种语义/行合并处理 |
 | 首次同步（已有本地数据） | `firstSync` 但本机已有会话/工作区/设置 | workspace 语义合并、patch 行合并；其它不透明设置默认保留本机 + 远端副本（`prefer-remote` 时备份本机后覆盖）；远端会话/独占文件导入 |
-| 导入冲突（keep-local） | 本机不透明设置文件在本次导出后又被修改，或普通同步中本机已有该文件但上次同步未记录（如远端新出现且本机已有同名文件） | 保留本机，远端版本写本机 `conflicts/` + 仓库 `.dsh-sync/conflicts/`，记入冲突列表 |
+| 导入冲突（keep-local） | 本机不透明设置文件在本次导出后又被修改，或普通同步中本机已有该文件但上次同步未记录 | 保留本机，远端版本写本机 `conflicts/` + 仓库 `.dsh-sync/conflicts/`，记入冲突列表 |
 | 导入冲突（prefer-remote） | 同上 | 备份本机到 `backups/` 后采用远端版本，记入冲突列表并告警 |
 | 导入冲突（fail） | 同上 | 抛 `SyncConflictError`，中止本次同步 |
+| 会话 live 闸门 | 远端会话在本机 `sessions.list()` 中打开 | 不覆盖文件；加入 `pendingSessionIds`，关闭后下一轮应用 |
+| 会话追加合并 | Git 会话冲突且两条日志为严格字节/行前缀关系 | 直接采用较长一份，不写冲突副本；`mergeAppendOnlySessions=false` 时退回常规冲突 |
+| 会话分叉 | 两条日志都有各自新增事件 | 不自动合并；按 `onConflict` 保留一方，另一方整份写冲突副本并告警 |
 | 正常更新 | 本机文件自上次同步未变、远端有新版本 | 备份本机旧文件 → 写入远端版本 |
 | 安全删除 | 远端删除某文件；本机文件仍等于上次同步记录 | 备份后删除；若本机已修改则保留并告警 |
 
 设计取舍：
 
 - **默认（`keep-local`）不静默丢本机数据**，宁可多留冲突副本；`prefer-remote` 覆盖前也会备份本机文件。
-- 会话日志是追加写的二进制，Git 无法行级合并，因此“同一会话双方都追加”只能判定为冲突。
-- `workspace.json` 不采用 Git 冲突解决（JSON 数组/对象冲突体验差），而是读出双方文档做语义合并；合并失败则保留本机注册表。
+- 会话日志是追加写的二进制；严格追加/前缀关系可直接采用较长一方，**分叉**才判定为冲突，不重编号、不拼接。
+- `workspace.json` 不采用 Git 冲突解决（JSON 数组/对象冲突体验差），而是读出双方文档做语义合并；运行时存在 registry 时通过 registry API 热应用。
 - patch 文件用“行级 + id”合并，避免整文件覆盖导致另一台设备的插件配置丢失。
+- 打开中的会话由 live 闸门保护，不会被覆盖；DSH live session 没有 reload API，因此更新只能等关闭后应用。
 
 ---
 
@@ -313,6 +372,8 @@ Windows 下大小写不敏感；替换按路径长度从长到短匹配，避免
 
 - `managed`：仓库路径 → `{ hash, localPath, localHash, kind, writer }`；
 - `deviceId`（首次同步生成的随机 id）、`deviceName`；
+- `mappingKey`：当前 `pathMappings` 的指纹；变化时禁用导出的 unchanged 快路径，保证路径切换后重新计算；
+- `pendingSessionIds`：因 live 闸门暂缓应用的会话 id；
 - `lastSyncAt` / `lastAttemptAt` / `lastPushAt` / `lastPullAt` / `lastCommit` / `lastError` / `lastSummary`；
 - `history`（最近 20 条结果）、`conflicts`（最近 50 条冲突路径）。
 
@@ -328,11 +389,12 @@ Windows 下大小写不敏感；替换按路径长度从长到短匹配，避免
 
 ## 10. 并发、锁与错误模型
 
-- **进程内单飞**：`runSync` 用模块级 Promise 锁；自动/手动/工具/命令共享。重叠返回 `busy/skipped`。
-- **跨设备无锁**：两台设备可同时同步；通过 fetch/merge/push 重试（最多 3 轮）收敛；仍失败抛 `PUSH_REJECTED` 并提示错开自动同步。
+- **进程内单飞**：`runSync` 用模块级 Promise 锁；轮询/写后/手动/工具/命令共享。重叠返回 `busy/skipped`。
+- **轮询节奏**：3s（活跃）/15s（空闲），写后约 2s 提前触发；失败指数退避（上限 60s + ±20% 抖动）；成功后清零。
+- **跨设备无锁**：两台设备可同时同步；通过 fetch/merge/push 重试（最多 3 轮）收敛；仍失败抛 `PUSH_REJECTED` 并提示错开操作。
 - **Git 子进程**：非交互、超时（`git.timeoutMs`）、`maxBuffer` 64 MiB；失败时把 stderr 末尾几行转成用户可读中文建议（认证/网络/SSH/通用）。
 - **错误分类**：`NOT_CONFIGURED`、`GIT_MISSING`、`SYNC_CONFLICT`、`PUSH_REJECTED`、`SYNC_CONFIG`、其它 `SYNC_FAILED`；结果不会抛出到会话持久化路径。
-- **文件占用**：Windows 上会话文件被 DSH 写入时可能 `EBUSY/EPERM/EACCES`；会话导入捕获后跳过并告警，下次重试。
+- **文件占用**：Windows 上会话文件被 DSH 写入时可能 `EBUSY/EPERM/EACCES`；会话导入捕获后跳过并告警，下次重试；live 会话即使能写也会被闸门拦下。
 
 ---
 
@@ -352,6 +414,7 @@ Windows 下大小写不敏感；替换按路径长度从长到短匹配，避免
 - 会话是 zstd 二进制，每次追加都会重写整个文件；Git 仓库会随对话增长。插件不提供 LFS/历史清理。
 - 会话/附件多时首次同步可能较慢；`git.timeoutMs` 可按网络调大。
 - 深层路径 + Windows 长路径限制：仓库设置 `core.longpaths=true`，系统仍需启用长路径支持。
+- 实时轮询流量：空轮询 ~1 KB/次，有变更 ~3–10 KB/次。Git smart HTTP 不消耗 REST 5000 次/小时配额，但受二级限流影响；建议每设备 ≤15 次/分钟，默认 3s/15s 配置远低于该值。多设备或大仓库应调大间隔/关闭部分设备的 realtime。
 
 ---
 
@@ -359,22 +422,24 @@ Windows 下大小写不敏感；替换按路径长度从长到短匹配，避免
 
 ### 已知限制
 
-1. **导入后需重启 DSH**：workspace 注册表/会话扫描只在启动时进行；运行期间外部写入不触发 UI 刷新。
-2. **同一会话并发继续会分叉**：不做会话级自动合并；冲突副本保留一方。
-3. **自动同步配置需重载**：`auto.*` 只在插件加载时读取。
-4. **退出不同步**：DSH 退出阶段不做同步。
-5. **DSH 数据格式版本变化**：插件不校验 session v4 / workspace v2 版本；跨大版本同步可能导入不兼容数据。
-6. **无跨设备锁**：依赖 Git 冲突与重试收敛。
-7. **无 LFS/历史清理**：仓库会膨胀。
-8. **无图形设置页**：配置靠 JSON/命令/工具。
-9. **Windows 长路径**：系统未启用长路径时可能失败。
+1. **首次安装/升级需重启一次**：v0.2.0 插件代码/hot-apply 接线在插件加载时建立；之后运行期热应用无需重启。只有缺少 registry/session 服务（CLI/最小 profile）时回退文件写入。
+2. **打开中的会话不会 live reload**：DSH live session 只读内存日志，远端更新进入 pending，关闭重开/重启后生效。
+3. **同一会话并发继续会分叉**：只合并严格追加/前缀关系，其余按冲突处理，不做会话级自动合并。
+4. **realtime 配置生效**：`intervalSeconds`/`idleIntervalSeconds`/`activeWindowSeconds`/`workspaceDeviceLabel`/`mergeAppendOnlySessions` 每轮重新读取；`realtime.enabled`/`pushDebounceSeconds` 与 `auto.*` 在插件加载时建立，修改后需重启。
+5. **退出不同步**：DSH 退出阶段不做同步。
+6. **DSH 数据格式版本变化**：插件不校验 session v4 / workspace v2 版本；跨大版本同步可能导入不兼容数据。
+7. **无跨设备锁**：依赖 Git 冲突与重试收敛；同一会话两端写只能事后处理。
+8. **无 LFS/历史清理**：仓库会膨胀。
+9. **实时轮询有持续流量与二级限流风险**：见第 12 节。
+10. **无图形设置页**：配置靠 JSON/命令/工具。
+11. **Windows 长路径**：系统未启用长路径时可能失败。
 
 ### 未验证项（来自 DSH 调研资料）
 
-- Desktop 下 HMR 对 `link:` 插件的实际重载行为（文档建议重启）；
+- Desktop 下 HMR 对 `link:` 插件的实际重载行为（文档建议升级后重启一次）；
 - Desktop 的代理设置是否被 git 子进程继承（插件只继承进程环境与 git 自身配置）；
 - 桌面插件页对 Git URL 安装的凭据流程；
-- 在 DSH 运行期间导入 `workspace.json` 的具体覆盖时序（因此要求导入后尽快重启、重启前不改工作区）。
+- `api-session/*` 事件在浏览器端的最终渲染细节由 DSH 客户端决定，插件只负责 emit 正确载荷。
 
 ### 可扩展方向
 

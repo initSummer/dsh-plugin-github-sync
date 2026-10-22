@@ -1,6 +1,6 @@
-# 安装与首次配置
+# 安装与首次配置（v0.2.0）
 
-本文覆盖：准备账号与工具 → 创建 PAT → 设置环境变量 → 两种安装方式 → 重启验证 → 首次配置 → 升级/卸载。
+本文覆盖：准备账号与工具 → 创建 PAT → 设置环境变量 → 三种安装方式 → 重启验证 → 首次配置 → 升级/卸载。v0.2.0 默认开启近实时同步；**首次安装或升级插件后重启一次 DSH**，之后运行期的工作区/会话热应用无需再重启。
 
 > 适用于 DSH `0.2.1-rc.2` Desktop（Windows / PowerShell）。插件目录：`<插件目录>`。
 
@@ -156,9 +156,27 @@ dsh plugin --profile desktop add link:<插件目录>
 - `link:` 不会复制代码，适合本机开发（改代码后重启 DSH 生效）；`file:` 会复制一份，适合固定版本。
 - 如果路径包含空格，给整个 `link:...` 参数加引号。
 
-### 4.3 安装后验证
+### 4.3 方式 C：安装脚本（v0.2.0 新增）
 
-1. 完全退出 DSH Desktop（托盘图标 → 退出，确认进程已结束），再重新启动。
+插件自带 `scripts/install.mjs`，自动查找最新的 Desktop `dsh.cmd` 并执行 `plugin --profile <p> add link:<本包>`：
+
+```powershell
+cd <插件目录>
+node scripts\install.mjs                                # 默认 desktop profile
+node scripts\install.mjs --profile desktop --print      # 只打印命令，不执行
+```
+
+也可以使用 package script：
+
+```powershell
+npm run install:profile
+```
+
+脚本适用于本机开发/升级；找不到 Desktop 垫片时会提示改用桌面插件页。
+
+### 4.4 安装后验证
+
+1. 完全退出 DSH Desktop（托盘图标 → 退出，确认进程已结束），再重新启动。**安装/升级插件后必须重启一次**；之后运行期同步无需重启。
 2. 在对话里输入 `/`，应能看到 `sync` 命令。
 3. 执行：
 
@@ -168,7 +186,8 @@ dsh plugin --profile desktop add link:<插件目录>
 
    应返回 `status | sync | init | help` 的用法。
 4. 模型侧 `github_sync` 工具也应可用（可让它执行 `action="status"`）。
-5. 若命令不存在：检查插件页是否已启用、是否重启过、DSH 日志中是否有 `github-sync` 的加载错误。
+5. 配置好仓库后，`/sync status` 应显示“实时同步：开启（活跃 3s / 空闲 15s 轮询；写后约 2s 推送）”以及工作区设备标签状态。
+6. 若命令不存在：检查插件页是否已启用、是否重启过、DSH 日志中是否有 `github-sync` 的加载错误。
 
 ---
 
@@ -227,20 +246,22 @@ CLI 与插件共享同一份配置和状态；首次同步完成后再启动 DSH
 
 ### 5.4 首次同步成功的标志
 
-- `/sync status` 显示仓库地址、设备名、最近同步时间；
+- `/sync status` 显示仓库地址、设备名、实时同步模式（活跃/空闲间隔）、最近同步时间；
 - 本地出现 `%USERPROFILE%\.dsh\github-sync\repo`；
-- GitHub 仓库里出现 `home/` 目录以及一次 `dsh-sync[<device>]: export ...` 提交；
+- GitHub 仓库里出现 `home/`、`profiles/desktop/` 与 `meta/workspaces.json`，以及一次 `dsh-sync[<device>]: export ...` 提交；
 - 首次同步可能较慢（要上传会话/附件），受 `limits.maxTotalMB`（默认 4 GB）限制；
-- 第二台及以后的设备首次同步时，插件会先导入远端内容：全新 DSH home（无会话/无工作区/设置基本为空）下同名文件以远端为准（覆盖前备份）；已有本地数据时保留本机同名文件、远端版本存为冲突副本。
+- 第二台及以后的设备首次同步时，插件会先导入远端内容：`workspace.json` 语义合并，patch 按行合并，远端会话导入；不透明设置按 `onConflict`（全新 home 远端优先，已有本地数据默认保留本机 + 远端副本）；
+- 首次同步后需**重启一次** DSH；之后运行期改动会在数秒内热应用，不需要再重启。
 
 ---
 
 ## 6. 多设备安装提示
 
 - 每台设备都要安装插件、设置自己的 token/凭据，并配置**同一个** `repo`。
-- `deviceName` 每台设备不同（默认取主机名，重名时请手动指定）。
+- `deviceName` 每台设备不同（默认取主机名，重名时请手动指定）；该名称会出现在提交信息、冲突副本路径和工作区标题的 ` · device` 后缀中。
 - 路径不同时，在路径不同的设备上配置 `pathMappings`（详见 [configuration.md](configuration.md) 与主 README 的多设备章节）。
-- 首次同步完成后**重启 DSH**，侧栏才会出现导入的工作区/会话。
+- 每台设备首次安装/升级后需重启一次 DSH；之后 A/B 两端同时运行时，工作区与会话会在数秒内实时出现，不需要再重启。
+- 默认 `realtime` 已开启；如果需要省流量/只读设备，可按 [configuration.md](configuration.md) 的 `realtime` 一节调整或关闭。
 
 ---
 
@@ -251,7 +272,8 @@ CLI 与插件共享同一份配置和状态；首次同步完成后再启动 DSH
   ```powershell
   & $dsh plugin --profile desktop add link:<插件目录>
   ```
-- 升级后先执行 `/sync status`，再执行一次 `/sync sync` 验证。
+- **v0.2.0 升级后要重启一次 DSH**，让新的近实时轮询/热应用接线生效；数据仓库格式向后兼容（`meta/workspaces.json` 会在第一次同步时生成）。
+- 升级后先执行 `/sync status`（确认“实时同步：开启”），再执行一次 `/sync sync` 验证。
 
 ---
 
@@ -283,5 +305,8 @@ $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations
 | 提示没有仓库/配置 | 编辑 `github-sync.json` 或执行 `/sync init <url>` |
 | token 已设置但 DSH 说认证失败 | 用户环境变量对已启动进程不生效：完全退出并重启 DSH Desktop |
 | 首次同步失败 | 先用 CLI `node bin\dsh-github-sync.mjs doctor` 检查 git/token；再 `sync` 看具体错误；参见 [troubleshooting.md](troubleshooting.md) |
+| 实时同步没生效 | 确认已安装 v0.2.0 并**重启过** DSH；`/sync status` 应显示“实时同步：开启”；检查 `realtime.enabled` 是否被设为 `false` |
+| 新会话/工作区不出现 | 等 3–6 秒；确认两端网络/认证正常；`/sync status` 看最近同步与 pending；旧版本需升级并重启 |
+| 已打开的会话不刷新 | 预期行为：live 会话不会被覆盖，更新在 pending 队列；关闭重开或重启 DSH 后可见 |
 
 更多排查看 [troubleshooting.md](troubleshooting.md)。

@@ -133,30 +133,30 @@ Git 认证失败。请为这台设备配置 GitHub 凭据，任选其一：
 
 ## 6. 同步成功但侧栏没有工作区 / 会话
 
-这是最常见的问题，**先重启 DSH Desktop**。
+v0.2.0 默认近实时热应用：正常情况下**不需要重启**，改动会在 3–6 秒内出现在侧栏。若没有出现，先按下面顺序检查。
 
-原因：DSH 在启动时读取 `storages/workspace.json` 并扫描 `sessions/`；运行中的进程不会因为外部文件变化而重新加载。插件同步完成后，需要完全退出并重启 DSH 才能在侧栏看到导入的工作区与会话。
-
-重启后仍不显示时，按顺序检查：
-
-1. **本机文件是否存在**
+1. **先等一轮实时同步**：确认 `/sync status` 显示“实时同步：开启”，并观察“最近同步”时间是否更新（活跃时约 3 秒一轮）。
+2. **确认插件版本/重启**：如果是刚安装或升级到 v0.2.0，必须**重启一次** DSH；旧版本没有热应用，只能重启后看到。
+3. **看是否有 pending**：`/sync status` 若显示“待应用（本机打开中的会话）：N 个”，说明对应会话正打开，关闭重开即可。
+4. **本机文件是否存在**
    ```powershell
    Get-ChildItem "$dshHome\sessions" -Directory | Select-Object Name
    Get-Content "$dshHome\storages\workspace.json" -Raw
    ```
    看会话目录是否按本机路径生成了 `--D-wwa--` 一类目录；`workspace.json` 里是否有对应记录、`path` 是否为本机真实路径、`sessionIds` 是否包含该会话。
-2. **路径是否与 `realpath` 一致**
+5. **路径是否与 `realpath` 一致**
    - 工作区路径必须是已存在的目录；
    - Windows 大小写、短路径（8.3）、junction、`\\?\` 前缀都可能导致不一致；
    - 不要用 junction 代替 `pathMappings`。
-3. **是否在 DSH 运行期间被覆盖**
-   导入后、重启前，如果你在 UI 里改动过工作区，DSH 可能用内存状态覆盖刚导入的 `workspace.json`。重新同步一次，然后立即重启。
-4. **看本次同步是否有告警**
+6. **看本次同步是否有告警**
    重新执行 `/sync sync`（或 CLI `sync`），读结果里的“提示/警告”；常见的有：
    - `workspace.json 合并后未通过 DSH 不变量校验，已保留本机注册表不写入：...`
    - `路径映射需要 rewriteSessionPaths=true ...已跳过该会话`
    - `会话文件正被占用，稍后重试：...`
-5. **检查 DSH 日志**中是否有 workspace/session 相关 warn（如 `canonical cwd ... differs from workspace path ...`）。
+   - `受控工作区热应用失败：...` / `推送会话事件失败：...`
+7. **检查 DSH 日志**中是否有 workspace/session 相关 warn（如 `canonical cwd ... differs from workspace path ...`，或 `github-sync` 的热应用错误）。
+8. **兜底重启**：以上都正常但仍不显示时，完全退出并重启 DSH；热应用依赖运行时服务，重启是最终兜底。
+9. **热应用服务缺失**：在 CLI/最小 profile 中运行插件时没有 `workspaceRegistry`/`sessionController`，插件回退为直接写文件；这种情况需要重启 DSH（或从未运行插件的环境改完文件后再启动）。
 
 如果 `workspace.json` 已损坏且无法合并，可以**完全退出 DSH**，备份后删除 `$dshHome\storages\workspace.json`，让 DSH 在下次启动时按会话 header 的 `cwd` 自动 bootstrap 工作区（代价：工作区顺序、置顶、归档信息可能丢失）。
 
@@ -288,11 +288,17 @@ git -C "$dshHome\github-sync\repo" revert <bad-commit>
 
 ### 9.3 同一会话分叉
 
-同一会话在两台设备同时继续会产生两条追加历史，插件不会自动合并。冲突副本里保留的是其中一方；请：
+同一会话在两台设备同时继续会产生两条追加历史。v0.2.0 只对“严格追加/前缀关系”自动合并（先同步、后继续），其余情况视为分叉：
 
-- 比较两份会话文件的大小/时间，保留内容更完整的一份；
-- 或接受分叉，手工整理需要的对话内容；
-- 之后养成“切换设备前先 `/sync sync`”的习惯。
+- 不重编号、不自动拼接；
+- 默认 `keep-local` 保留一方，另一方整份日志写入仓库 `.dsh-sync/conflicts/<device>/<时间戳>/` 并告警；
+- 若本机正打开该会话，远端更新还会被 live 闸门暂缓为 pending。
+
+请比较两份会话文件的大小/时间，保留内容更完整的一份，或手工整理需要的对话内容；之后避免两端同时打开同一会话。
+
+### 9.4 已打开的会话不刷新（pending）
+
+这是预期行为：DSH live session 只读内存日志，插件不会覆盖它。`/sync status` 会显示“待应用（本机打开中的会话）：N 个”；关闭并重新打开该会话（或重启 DSH）后，下一轮同步会自动应用远端更新。不要尝试删除会话文件来“强制刷新”，那会丢事件。
 
 ---
 
@@ -300,11 +306,12 @@ git -C "$dshHome\github-sync\repo" revert <bad-commit>
 
 | 现象 | 说明 | 处理 |
 |---|---|---|
-| `另一个同步任务正在进行中，本次请求已跳过` | 同一进程内自动同步与手动同步重叠 | 等当前同步结束再试；无需处理 |
-| `推送失败：远端分支在多次重试后仍被其他设备更新` | 两台设备几乎同时推送，重试 3 轮仍未成功 | 稍后重试；错开自动同步时间；切换设备前手动同步 |
+| `另一个同步任务正在进行中，本次请求已跳过` | 同一进程内实时轮询、写后触发与手动同步重叠 | 等当前同步结束再试；无需处理 |
+| `推送失败：远端分支在多次重试后仍被其他设备更新` | 两台设备几乎同时推送，重试 3 轮仍未成功 | 稍后重试（实时轮询会自动再跑）；错开操作；必要时一台关闭 `realtime` |
 | 同步结果里有 `拉取远端更改` | 正常：本次合并了另一台设备的提交 | 无需处理 |
-| 两台设备频繁冲突 | 自动间隔太接近或同时改同一文件 | 给设备设置不同自动间隔（或一台关闭自动同步）；避免同时编辑同一工作区/会话 |
-| 设备名相同 | 冲突副本目录/提交信息混在一起 | 给每台设备设置不同 `deviceName` |
+| 两台设备频繁冲突 | 同时改同一文件/同一会话 | 避免同时编辑同一工作区或会话；给一台设备关闭 `realtime` 或调大间隔 |
+| 设备名相同 | 冲突副本目录、提交信息、标题后缀混在一起 | 给每台设备设置不同 `deviceName` |
+| 一轮同步很频繁/日志刷屏 | 实时模式默认 3s/15s；每轮只在有变化时打 info 日志 | 正常；可用 `/sync status` 看速率，或调大 `realtime.intervalSeconds`/`idleIntervalSeconds` |
 
 ---
 
@@ -327,7 +334,7 @@ git -C "$dshHome\github-sync\repo" revert <bad-commit>
 
 1. 确认插件已安装并在插件页启用：
    - 侧栏 **插件** → 搜索 `github-sync` / `dsh-plugin-github-sync`；
-2. 完全退出并重启 DSH Desktop；
+2. 完全退出并重启 DSH Desktop（v0.2.0 首次安装/升级必须重启一次，之后运行期不需要）；
 3. 查看 DSH 启动日志中是否有 `github-sync` 相关错误（启动失败诊断目录通常为 `$dshHome\logs\`，运行日志在 Desktop 的日志目录）；
 4. 用 `dsh --profile desktop --dump-config` 确认插件行是否存在（注意：该命令可能初始化/改写 profile，执行前备份；详见 DSH 文档）；
 5. 重新安装：
@@ -368,6 +375,8 @@ $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations
 
 完全重启 DSH；先 `/sync status` 再 `/sync sync` 验证。`link:` 安装修改代码后重启即可；`package.json` 的 `main`/`exports` 变更需要重新安装。
 
+> 升级到 v0.2.0 后必须重启一次 DSH，新的实时轮询/热应用才会生效；之后运行期不再需要重启。数据仓库向后兼容，`meta/workspaces.json` 会在第一次同步时生成。
+
 ### 卸载
 
 ```powershell
@@ -398,7 +407,8 @@ $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations
 
 - 会话格式（当前 v4）、workspace 域版本（当前 v2）会随 DSH 升级 bump；
 - 插件按字节复制会话、按结构合并 workspace，**不校验版本**；
-- 两台设备尽量保持相同 DSH 版本；升级前先同步并保留备份，升级后先在一台设备验证会话可打开，再让另一台同步。
+- 两台设备尽量保持相同 DSH 版本；升级 DSH 前先同步并保留备份，升级后先在一台设备验证会话可打开，再让另一台同步。
+- 升级插件到 v0.2.0 后需重启一次 DSH；`meta/workspaces.json` 会在第一次同步时生成，旧仓库无需迁移。
 
 ---
 
@@ -416,3 +426,70 @@ $dsh = Get-ChildItem "$env:APPDATA\DSH Desktop\host-commands\desktop\generations
 | 状态文件 | `$dshHome\github-sync\state.json` |
 | 强制重试一次 | `/sync sync`（或关闭 DSH 后 CLI `sync`） |
 | 试运行看变更量 | `/sync sync` 前用 CLI `sync --dry-run` |
+| 实时状态/pending | `/sync status`（“实时同步”与“待应用”两行） |
+
+---
+
+## 17. 实时同步问题（v0.2.0）
+
+### 17.1 新会话/工作区在另一端不出现
+
+按顺序检查：
+
+1. **版本与重启**：两端都应为 v0.2.0；刚安装/升级后各重启一次 DSH。旧版没有热应用。
+2. **realtime 状态**：`/sync status` 应显示“实时同步：开启（活跃 3s / 空闲 15s 轮询；写后约 2s 推送）”。若显示“关闭”，检查 `realtime.enabled` 是否被设为 `false`。
+3. **轮询是否在跑**：看“最近同步”时间是否每几秒更新；若报错先按第 2/3 节排查网络/认证。
+4. **对端是否推送**：另一端 `/sync status` 的“最近同步”应已更新，且 GitHub 上出现新提交。
+5. **热应用告警**：看日志中是否有 `受控工作区热应用失败`、`推送会话事件失败`、`新会话 ... 暂未被 sessionController 列出`；这类告警通常会在下一轮/重启后消失。
+6. **手动确认**：`/sync sync` 后等 5–10 秒；仍不出现则重启 DSH 兜底。
+7. **pending**：`/sync status` 的“待应用（本机打开中的会话）”不为 0 时，对应会话是打开状态，关闭重开即可。
+
+### 17.2 工作区标题没有 ` · 设备名`
+
+- 确认 `realtime.workspaceDeviceLabel` 为 `true`（默认）；
+- 来源设备必须在仓库 `meta/workspaces.json` 中有记录——该记录在来源设备首次导出该工作区时生成；如果工作区是旧版本插件导出的，下一次来源设备同步会补上；
+- 已有标题在本机是 `base · device` 形式；如果手动改过标题，下一次同步会重新按 sidecar 装饰；
+- 关闭标签后恢复：把 `workspaceDeviceLabel` 改回 `true` 并同步；旧后缀会被剥离再统一追加，不会重复叠加。
+- 想彻底去掉后缀：需要在**所有设备**上设为 `false`，并手动把已带 ` · device` 的标题改名（关闭只阻止新增，不会自动剥离旧后缀）。
+
+### 17.3 已打开的会话不刷新（pending 累计）
+
+预期行为，不要尝试删除/强制覆盖：
+
+- DSH live session 只读内存日志，远端更新写入会被闸门拦下并记录 pending；
+- `/sync status` 显示“待应用（本机打开中的会话）：N 个”；
+- 关闭并重新打开该会话（或重启 DSH）后，下一轮同步会自动应用；
+- 如果需要立即应用，先关闭该会话，再 `/sync sync`（或等 3–6 秒）。
+
+### 17.4 实时轮询流量/限流
+
+- 估算：空轮询约 1 KB/次，有变更约 3–10 KB/次；默认活跃 3s/空闲 15s。
+- Git smart HTTP 端点不消耗 GitHub REST 的 5000 次/小时配额，但受**二级限流**约束；建议每设备 ≤15 次/分钟。
+- 需要降流量时：调大 `realtime.intervalSeconds`/`idleIntervalSeconds`；或把某台设备 `realtime.enabled=false`（回退到 `auto.intervalMinutes`，默认 10 分钟）；或只在一台设备开启实时、另一台按需手动同步。
+- 出现 429/限流日志时，先关闭部分设备的实时同步，等待一段时间再恢复。
+
+### 17.5 想关闭实时、回退定时模式
+
+```json
+{
+  "realtime": { "enabled": false },
+  "auto": { "startup": true, "intervalMinutes": 10, "sessionDebounceSeconds": 120 }
+}
+```
+
+修改后建议重启一次 DSH（启动阶段的模式与旧定时器在插件加载时建立）。回退后工作区/会话仍需热应用才能免重启；热应用与 realtime 模式相互独立，只是触发频率降低。
+
+### 17.6 热应用失败/只能重启才看到
+
+- 检查日志中的 `热应用` 相关告警；`workspaceRegistry`/`sessionController` 在 CLI/最小 profile 中不存在时，插件只能写文件，需要重启让 DSH 读取。
+- 在正常 Desktop profile 中，热应用失败通常是暂时的（例如 registry 正忙）；下一轮会自动重试。
+- 重启一次仍无效时，用 `node bin\dsh-github-sync.mjs status` 确认真实同步状态，再按第 6 节排查文件/路径。
+
+### 17.7 同一会话双端同时写
+
+这是已知无法完全自动化的场景：DSH 依赖单写者 + 连续 `seq`，两端各自追加会产生分叉。
+
+- 插件只自动处理严格追加/前缀关系（较长一份直接采用）；
+- 分叉时默认保留本机整份 + 远端整份冲突副本，并告警；
+- 处理：比较两份日志，保留需要的一份；必要时手动 fork 成新会话；
+- 预防：不要在两台设备上同时打开同一会话；切换前先关闭另一端的该会话。

@@ -69,6 +69,15 @@ $DSH_HOME/github-sync.json
     "intervalMinutes": 10,
     "sessionDebounceSeconds": 120
   },
+  "realtime": {
+    "enabled": true,
+    "intervalSeconds": 3,
+    "idleIntervalSeconds": 15,
+    "activeWindowSeconds": 90,
+    "pushDebounceSeconds": 2,
+    "workspaceDeviceLabel": true,
+    "mergeAppendOnlySessions": true
+  },
   "scopes": {
     "settings": true,
     "sessions": true,
@@ -109,7 +118,7 @@ $DSH_HOME/github-sync.json
 
 - JSON 中 Windows 路径必须转义：`"E:\\my-workspace"`；
 - 文件保存为 UTF-8 即可（读取时会去掉 BOM）；
-- 修改后不需要重新安装插件。除 `auto.*` 外的字段在下一次同步/状态查询时生效。
+- 修改后不需要重新安装插件。`realtime` 的间隔/窗口/标签/追加合并字段在下一轮轮询/同步时生效；`realtime.enabled`/`pushDebounceSeconds` 与 `auto.*` 在插件加载时建立，修改后建议重启一次（详见第 9 节）。
 
 ---
 
@@ -121,12 +130,14 @@ $DSH_HOME/github-sync.json
 |---|---|---|---|
 | `$schema` | string | 内置 URL | 仅用于编辑器提示，可删 |
 | `version` | number | `1` | 配置格式版本；当前没有迁移逻辑，保持默认即可 |
-| `enabled` | boolean | `true` | 是否启用**自动同步**。`repo` 为空时会被强制视为 `false`。手动 `/sync sync`、工具 `action=sync`、CLI `sync` 只要有 `repo` 就会执行，不受此字段阻止 |
+| `enabled` | boolean | `true` | 是否启用**后台同步**（近实时/自动）。`repo` 为空时会被强制视为 `false`。手动 `/sync sync`、工具 `action=sync`、CLI `sync` 只要有 `repo` 就会执行，不受此字段阻止 |
 | `repo` | string | `""` | **必填**。GitHub 私有仓库完整 URL：`https://github.com/<you>/<repo>.git`、`git@github.com:<you>/<repo>.git` 或 `ssh://...`。不接受 `owner/name` 简写 |
 | `branch` | string | `"main"` | 同步分支。空仓库首次同步会自动创建该分支；已有仓库应填远端默认分支名 |
 | `remoteName` | string | `"origin"` | 快照仓库里的 remote 名；通常不用改 |
 | `deviceName` | string | 主机名 | 设备标识（提交信息、冲突副本目录）。会清理为 `[A-Za-z0-9._-]`，去首尾 `-`，最长 48；为空时回退到清理后的主机名 |
 | `profileName` | string | `"desktop"` | 要同步的 DSH profile。插件只处理 `profiles/<profileName>/`，仓库里其它 profile 目录会被忽略 |
+| `realtime` | object | 见 6.2 | 近实时同步设置（v0.2.0 默认开启） |
+| `auto` | object | 见 6.1 | 启动同步与 realtime 关闭时的定时兜底 |
 
 ### 4.2 路径映射与重写
 
@@ -241,20 +252,38 @@ $DSH_HOME/github-sync.json
 
 ---
 
-## 6. `auto`：自动同步
+## 6. `auto` 与 `realtime`：自动/近实时同步
+
+### 6.1 `auto`（启动同步 + realtime 关闭时的兜底模式）
 
 | 字段 | 默认 | 范围 | 说明 |
 |---|---|---|---|
-| `auto.startup` | `true` | boolean | 插件加载后约 **15 秒**触发一次启动同步 |
-| `auto.intervalMinutes` | `10` | 0–1440 | 定时同步间隔（分钟）；`0` 关闭 |
-| `auto.sessionDebounceSeconds` | `120` | 0–3600 | 有会话写入事件后约 120 秒触发一次同步；窗口内后续事件不会重复排期；`0` 关闭 |
+| `auto.startup` | `true` | boolean | 插件加载后先跑一轮：realtime 开启时约 **5 秒**后，realtime 关闭时约 15 秒后 |
+| `auto.intervalMinutes` | `10` | 0–1440 | **仅 realtime 关闭时**的定时同步间隔（分钟）；`0` 关闭 |
+| `auto.sessionDebounceSeconds` | `120` | 0–3600 | **仅 realtime 关闭时**，有会话写入后约 120 秒触发一次同步；`0` 关闭 |
+
+### 6.2 `realtime`（近实时自适应轮询，v0.2.0 默认开启）
+
+| 字段 | 默认 | 范围 | 说明 |
+|---|---|---|---|
+| `realtime.enabled` | `true` | boolean | 开启近实时同步；设为 `false` 回退到 `auto.intervalMinutes` 定时模式 |
+| `realtime.intervalSeconds` | `3` | 1–3600 | 活跃状态轮询间隔（秒） |
+| `realtime.idleIntervalSeconds` | `15` | 1–3600 | 空闲状态轮询间隔（秒） |
+| `realtime.activeWindowSeconds` | `90` | 5–3600 | 最后一次会话活动后，保持活跃模式的时长（秒） |
+| `realtime.pushDebounceSeconds` | `2` | 0–600 | 会话写入后延迟多久触发同步；`0` 表示不因写入额外触发 |
+| `realtime.workspaceDeviceLabel` | `true` | boolean | 工作区标题是否追加来源设备后缀（`wwa · jackfruit`）。关闭后不再新增后缀，但**已带后缀的标题不会自动剥离**，需手动改名；建议所有设备统一设置 |
+| `realtime.mergeAppendOnlySessions` | `true` | boolean | 会话日志为严格追加/前缀关系时自动采用较长一份（不重编号、不合并分叉） |
 
 行为细节：
 
-- 自动同步只在插件加载时读取一次这些值；修改后需要**重载插件或重启 DSH** 才生效。
-- 自动同步与手动同步共享单飞锁：同一进程内同时只允许一个同步，重叠请求会被跳过（结果提示“另一个同步任务正在进行中”）。
-- **退出 DSH 时不会自动同步**（退出阶段无法可靠等待同步完成）。请依赖定时同步，或在关闭 DSH 前手动 `/sync sync`。
-- 只读设备（不想推送）可以设 `auto.startup=false`、`auto.intervalMinutes=0`、`auto.sessionDebounceSeconds=0`，需要时再手动同步。
+- 活跃/空闲由 `activeWindowSeconds` 判断：最近一次 `session/event` 在窗口内即活跃。
+- 失败退避：连续失败按 5s → 10s → 20s → 40s → 60s（上限 60s）指数退避并加 ±20% 抖动。
+- 写后触发与轮询共享单飞锁；“无变化快路径”会跳过导入，避免高频轮询做无谓工作。
+- 流量估算：空轮询约 1 KB/次，有变更约 3–10 KB/次。Git smart HTTP 端点不消耗 GitHub REST 5000 次/小时配额，但受二级限流约束；建议每设备 ≤15 次/分钟（默认配置远低于此）。
+- `realtime.enabled` 与 `realtime.pushDebounceSeconds` 在插件加载时用于建立轮询/事件监听，修改后建议重启一次；其它 realtime 字段下一轮读取。
+- 自动/实时同步与手动同步共享单飞锁：同一进程内同时只允许一个同步，重叠请求会被跳过（结果提示“另一个同步任务正在进行中”）。
+- **退出 DSH 时不会自动同步**（退出阶段无法可靠等待同步完成）。请依赖实时/定时同步，或关闭前手动 `/sync sync`。
+- 只读设备可设 `realtime.enabled=false`，并把 `auto.startup=false`、`auto.intervalMinutes=0`、`auto.sessionDebounceSeconds=0`，需要时再手动同步。
 
 ---
 
@@ -278,8 +307,8 @@ $DSH_HOME/github-sync.json
 | 字段 | 同步内容 | 备注 |
 |---|---|---|
 | `settings` | `home/storages/**`（工作区、projcache、community_market 除外）、`home/cordis.patch.yml`、`home/cordis.yml`、`profiles/<profileName>/cordis.patch.yml` | patch 文件会剔除本插件自己的行（`id: github-sync` / `name: dsh-plugin-github-sync`），避免把 A 的本机配置带到 B |
-| `sessions` | `home/sessions/**` | 只处理 `session[.vN].jsonl[.zstd]` 日志文件；跳过锁/临时文件/符号链接 |
-| `workspaces` | `home/storages/workspace.json` | 语义合并，见主 README |
+| `sessions` | `home/sessions/**` | 只处理 `session[.vN].jsonl[.zstd]` 日志文件；跳过锁/临时文件/符号链接。实时导入时，正在本机打开的会话会暂缓（pending）；追加/前缀关系可在 Git 合并时自动采用较长日志 |
+| `workspaces` | `home/storages/workspace.json`、`meta/workspaces.json` | 语义合并；`meta/workspaces.json` 记录来源设备，用于标题 `base · device`（可用 `realtime.workspaceDeviceLabel=false` 关闭后缀） |
 | `skills` | `home/skills/**`、`home/AGENTS.md`、`home/agents.md` | 用户级技能与全局指令 |
 | `attachments` | `home/attachments/**` | 会话附件对象；关闭后 B 上历史图片/文件可能读不到 |
 | `market` | `home/storages/community_market/global.json`、`community_market/sources/**` | 只同步权威来源注册，不同步目录缓存 |
@@ -290,7 +319,7 @@ $DSH_HOME/github-sync.json
 
 - **只要设置，不要对话**：`sessions=false`、`workspaces=false`、`attachments=false`。
 - **只要对话/工作区**：`settings=false`、`skills=false`、`market=false`。
-- **完全手动**：关闭所有 `auto.*`，只用 `/sync sync`。
+- **完全手动**：`realtime.enabled=false`，并关闭 `auto.*`，只用 `/sync sync`。
 
 注意：关闭 `workspaces` 但保留 `sessions` 时，导入的会话不会自动登记到工作区；关闭 `sessions` 但保留 `workspaces` 时，远端工作区可能指向缺失会话。插件会在状态中提示。
 
@@ -322,10 +351,12 @@ token 查找顺序与使用方式：
 
 | 改动 | 生效方式 |
 |---|---|
-| `repo`、`branch`、`remoteName`、`scopes`、`pathMappings`、`rewriteSessionPaths`、`createMissingWorkspaceDirs`、`onConflict`、`backup`、`limits`、`excludeSessionIds`、`excludeWorkspacePaths`、`git.*`、`commit.*` | 每次同步/状态查询都会重新读取 `github-sync.json`，**下一次操作即生效**（token 环境变量本身需 DSH 重启后才进入进程环境） |
-| `auto.*` | 插件加载时读取一次，需要重载插件/重启 DSH |
+| `repo`、`branch`、`remoteName`、`scopes`、`pathMappings`、`rewriteSessionPaths`、`createMissingWorkspaceDirs`、`onConflict`、`backup`、`limits`、`excludeSessionIds`、`excludeWorkspacePaths`、`git.*`、`commit.*` | 每轮同步/状态查询都会重新读取 `github-sync.json`，通常**下一轮轮询（数秒内）即生效**（token 环境变量本身需 DSH 重启后才进入进程环境） |
+| `realtime.intervalSeconds` / `idleIntervalSeconds` / `activeWindowSeconds` / `workspaceDeviceLabel` / `mergeAppendOnlySessions` | 每轮读取配置，通常下一轮生效 |
+| `realtime.enabled` / `realtime.pushDebounceSeconds` | 插件加载时用于建立轮询/事件监听；修改后建议重载插件/重启 DSH |
+| `auto.*` | 插件加载时读取一次；`auto.intervalMinutes` / `auto.sessionDebounceSeconds` 仅在 `realtime.enabled=false` 时使用，修改后需重载插件/重启 DSH |
 | `deviceName` / `profileName` | 下一次操作生效；`deviceName` 会体现在之后提交的信息/冲突目录名中 |
-| 插件代码/版本 | 重启 DSH（`link:` 安装时） |
+| 插件代码/版本 | v0.2.0 安装或升级后重启 DSH 一次；之后运行期实时同步与热应用无需再重启 |
 
 `/sync init` 会写回配置文件（保留其它字段），之后的同步会重新读取。
 

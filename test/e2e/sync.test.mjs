@@ -127,6 +127,7 @@ test('two devices synchronize settings, sessions and workspaces through a bare r
     assert.equal(rows.length, 1)
     assert.equal(pathKey(rows[0].path), pathKey(localWorkspaceRoot))
     assert.deepEqual(rows[0].sessionIds, [sessionId])
+    assert.equal(rows[0].title, 'wwa · device-a', 'workspace title carries the origin device')
 
     const status = await computeStatus({ dshHome: homeB, config: configB, warnings: [] })
     assert.equal(status.data.configured, true)
@@ -140,6 +141,47 @@ test('two devices synchronize settings, sessions and workspaces through a bare r
     const state = await readState(homeA)
     assert.ok(state.lastSyncAt)
     assert.equal(state.lastError, null)
+  })
+
+  await t.test('an append-only session extension merges without conflict', async () => {
+    await appendSessionEvent(homeA, { id: sessionId, cwd: workspaceA }, {
+      type: 'user/message',
+      seq: 11,
+      time: Date.now(),
+      data: { message: { content: [{ type: 'text', text: 'A 设备实时追加的新消息' }] } },
+    })
+    const resultA = await runSync({ dshHome: homeA, config: configA, reason: 'test:append-a' })
+    assert.equal(resultA.ok, true, resultA.summary)
+    const resultB = await runSync({ dshHome: homeB, config: configB, reason: 'test:append-b' })
+    assert.equal(resultB.ok, true, resultB.summary)
+    assert.equal(resultB.conflicts.length, 0, 'append-only extension must not be reported as a conflict')
+    const plain = (await decodeFrames(await readFile(sessionFileB))).join('')
+    assert.equal(plain.includes('A 设备实时追加的新消息'), true, 'device B received the appended event')
+  })
+
+  await t.test('a live session update is deferred until the session closes', async () => {
+    await appendSessionEvent(homeA, { id: sessionId, cwd: workspaceA }, {
+      type: 'user/message',
+      seq: 12,
+      time: Date.now(),
+      data: { message: { content: [{ type: 'text', text: 'A 在 B 打开会话期间追加' }] } },
+    })
+    const resultA = await runSync({ dshHome: homeA, config: configA, reason: 'test:live-a' })
+    assert.equal(resultA.ok, true, resultA.summary)
+    const whileLive = await runSync({
+      dshHome: homeB,
+      config: configB,
+      reason: 'test:live-b',
+      liveSessionIds: new Set([sessionId]),
+    })
+    assert.equal(whileLive.ok, true, whileLive.summary)
+    assert.ok(whileLive.pendingSessionIds.includes(sessionId), 'live session update is deferred')
+    const during = (await decodeFrames(await readFile(sessionFileB))).join('')
+    assert.equal(during.includes('A 在 B 打开会话期间追加'), false, 'live file is not overwritten')
+    const afterClose = await runSync({ dshHome: homeB, config: configB, reason: 'test:closed-b' })
+    assert.equal(afterClose.ok, true, afterClose.summary)
+    const after = (await decodeFrames(await readFile(sessionFileB))).join('')
+    assert.equal(after.includes('A 在 B 打开会话期间追加'), true, 'pending update is applied after close')
   })
 
   await t.test('an established third device merges remote state instead of overwriting it', async () => {

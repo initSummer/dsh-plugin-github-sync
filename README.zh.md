@@ -1,10 +1,12 @@
-# dsh-plugin-github-sync
+# dsh-plugin-github-sync v0.2.0
 
-> 用一条 `/sync` 命令，把本机 DSH 的设置、对话记录、工作区、技能和附件同步到你自己的 **GitHub 私有仓库**，换一台设备后继续之前的工作。
+> 用一条 `/sync` 命令，把本机 DSH 的设置、对话记录、工作区、技能和附件同步到你自己的 **GitHub 私有仓库**，并在多台设备之间**近实时**继续工作。
 
+- 版本：`v0.2.0`（近实时多设备；首次安装或升级后重启一次 DSH，之后运行期无需重启）。
 - 适用环境：DSH `0.2.1-rc.2` Desktop（Windows / PowerShell 为主；插件本身是纯 Node ESM，无第三方运行时依赖）。
-- 仓库布局：插件把 `$DSH_HOME`（默认 `%USERPROFILE%\.dsh`）的受管内容投影到私有仓库的 `home/` 与 `profiles/<profile>/` 目录，再用 Git 提交/拉取/合并。
-- 入口：对话里的 `/sync` 命令、模型可调用的 `github_sync` 工具、`bin/dsh-github-sync.mjs` 独立 CLI，以及可选的启动/定时/写后自动同步。
+- 仓库布局：插件把 `$DSH_HOME`（默认 `%USERPROFILE%\.dsh`）的受管内容投影到私有仓库的 `home/`、`profiles/<profile>/` 与 `meta/workspaces.json`，再用 Git 提交/拉取/合并。
+- 入口：对话里的 `/sync` 命令、模型可调用的 `github_sync` 工具、`bin/dsh-github-sync.mjs` 独立 CLI，以及默认开启的近实时后台同步。
+- 实时能力：活跃时约每 3 秒、空闲时约每 15 秒轮询；本机有会话写入后约 2 秒触发同步；导入的工作区/会话通过 DSH 运行时热应用，**不需要重启 DSH** 就会出现在侧栏（已打开的会话除外，见下文）。
 
 > ⚠️ **必须使用私有仓库。** 对话正文、工具输出、附件内容都会进入仓库；插件不会同步 `.credentials.yaml` 等密钥文件，但对话中有可能包含敏感信息。
 
@@ -24,7 +26,7 @@ dsh plugin --profile desktop add link:<插件目录>
 /sync init https://github.com/<you>/dsh-sync.git
 ```
 
-首次同步会把本机数据推到仓库；换到第二台设备安装、配置好同一个仓库（必要时加 `pathMappings`）并同步一次后，重启 DSH 即可在侧栏看到工作区与会话。
+首次同步会把本机数据推到仓库；换到第二台设备安装、配置好同一个仓库（必要时加 `pathMappings`）并同步一次后，工作区与会话会在数秒内出现在侧栏，**运行期不再需要重启**（首次安装/升级插件本身需要重启一次）。
 
 ---
 
@@ -56,8 +58,8 @@ dsh plugin --profile desktop add link:<插件目录>
 | 范围 | 仓库内路径 | 内容 |
 |---|---|---|
 | `settings` | `home/storages/**`、`home/cordis.patch.yml`、`home/cordis.yml`、`profiles/<profileName>/cordis.patch.yml` | DSH 设置（`storages` 下除工作区/缓存/市场外的 JSON 域，如 `schedule.json`、`settings.json`）、profile 用户设置层、home 级 patch 层 |
-| `sessions` | `home/sessions/**` | 对话日志 `session.v4.jsonl.zstd`（zstd 多帧 JSONL，按字节复制） |
-| `workspaces` | `home/storages/workspace.json` | 工作区注册表（按工作区 id / 路径语义合并，不是整文件覆盖） |
+| `sessions` | `home/sessions/**` | 对话日志 `session.v4.jsonl.zstd`（zstd 多帧 JSONL）；路径不变时按字节复制，路径变化时逐帧重写；追加扩展可自动合并（见 9.x） |
+| `workspaces` | `home/storages/workspace.json`、`meta/workspaces.json` | 工作区注册表语义合并；`meta/workspaces.json` 记录每个工作区的来源设备，用于把侧栏标题显示为 `wwa · jackfruit` |
 | `skills` | `home/skills/**`、`home/AGENTS.md`、`home/agents.md` | 用户级技能与全局 Agent 指令 |
 | `attachments` | `home/attachments/**` | 会话引用的图片/文件附件（内容寻址对象库） |
 | `market` | `home/storages/community_market/global.json`、`community_market/sources/**` | 插件市场源注册（权威用户意图；目录缓存不同步） |
@@ -86,6 +88,8 @@ dsh plugin --profile desktop add link:<插件目录>
 | `profiles/*/cordis.yml` | 启动器生成的 profile root，不是用户设置 |
 | 仓库里的 `.dsh-sync/**` | 冲突副本目录，导入时忽略 |
 | `session.lock`、`*.tmp`、迁移临时文件、符号链接 | 锁/临时/非普通文件 |
+
+> 会话文件被同名覆盖的问题由 `live` 闸门处理：会话正在本机打开时，远端更新暂缓应用（pending），关闭会话后自动应用。详见 [9.6](#96-打开中的会话pending)。
 
 > B 设备不会拿到 A 的 DSH 登录状态和模型 API key：需要自己在 B 上登录 DSH、配置模型服务商 key。
 
@@ -201,9 +205,25 @@ dsh plugin --profile desktop add link:<插件目录>
 - `file:` 会复制一份安装，适合固定版本。
 - 卸载：`& $dsh plugin --profile desktop remove dsh-plugin-github-sync`，然后重启 DSH。卸载不会删除已同步的数据，也不会删除 `$DSH_HOME/github-sync.json` / `$DSH_HOME/github-sync/`。
 
-### 3.3 安装后验证
+### 3.3 方式 C：安装脚本（可选）
 
-1. 完全退出 DSH Desktop（托盘图标退出，确保进程结束）后重新打开。
+插件自带 `scripts/install.mjs`，会自动查找 Desktop 的 `dsh` 垫片并执行上面的 `add link:`：
+
+```powershell
+cd <插件目录>
+node scripts\install.mjs                 # 默认 desktop profile
+node scripts\install.mjs --profile desktop --print   # 只打印将要执行的命令
+```
+
+或使用 package script：
+
+```powershell
+npm run install:profile
+```
+
+### 3.4 安装后验证
+
+1. 完全退出 DSH Desktop（托盘图标退出，确保进程结束）后重新打开。**安装或升级插件后必须重启一次**；之后运行期的同步不需要再重启。
 2. 对话输入 `/`，应能看到 `sync` 命令；输入 `/sync help` 应返回用法。
 3. 模型侧工具 `github_sync` 也应可见（例如让它调用 `action="status"`）。
 4. 若 `/sync` 不存在：检查插件页是否启用、DSH 日志是否有加载错误，再重启一次。
@@ -247,6 +267,15 @@ notepad "$dshHome\github-sync.json"
     "startup": true,
     "intervalMinutes": 10,
     "sessionDebounceSeconds": 120
+  },
+  "realtime": {
+    "enabled": true,
+    "intervalSeconds": 3,
+    "idleIntervalSeconds": 15,
+    "activeWindowSeconds": 90,
+    "pushDebounceSeconds": 2,
+    "workspaceDeviceLabel": true,
+    "mergeAppendOnlySessions": true
   },
   "scopes": {
     "settings": true,
@@ -322,10 +351,12 @@ node bin\dsh-github-sync.mjs init --repo https://github.com/<you>/dsh-sync.git -
 
 | 改动 | 生效时机 |
 |---|---|
-| `repo`、`branch`、`scopes`、`pathMappings`、`onConflict`、`limits`、`backup`、`git.path` 等 | 每次同步/状态查询都会重新读取配置文件，**无需重启**即可在下一次操作生效 |
-| `auto.*`（启动同步、定时间隔、写后同步窗口） | 只在插件加载时读取，**需要重载插件或重启 DSH** |
+| `repo`、`branch`、`scopes`、`pathMappings`、`onConflict`、`limits`、`backup`、`git.path` 等 | 每轮同步/状态查询都会重新读取配置文件，通常在**下一轮轮询**（数秒内）生效，无需重启 |
+| `realtime.intervalSeconds` / `idleIntervalSeconds` / `activeWindowSeconds` / `workspaceDeviceLabel` / `mergeAppendOnlySessions` | 每轮读取，通常下一轮生效，无需重启 |
+| `realtime.enabled` / `realtime.pushDebounceSeconds` | 在插件加载时用于建立轮询/会话事件监听，修改后建议**重载插件或重启 DSH** |
+| `auto.*`（启动同步、legacy 定时/写后窗口） | 只在插件加载时读取，**需要重载插件或重启 DSH**；`realtime.enabled=false` 时才会用到其中大部分字段 |
 | 环境变量（token） | DSH 进程启动时继承，**需要完全重启 DSH Desktop** |
-| 插件代码升级 | `link:` 安装改代码后重启 DSH；`package.json` 的入口/导出变更需要重新安装 |
+| 插件代码升级（v0.2.0 及以后） | 升级后重启一次 DSH；之后运行期实时同步无需再重启 |
 
 > Desktop 的 HMR 可能在改动 profile 配置或 `link:` 包文件时自动重载插件，但安装/升级后的行为以**完全重启 DSH Desktop** 为准；`/sync` 命令消失时优先尝试重启。
 
@@ -333,7 +364,7 @@ node bin\dsh-github-sync.mjs init --repo https://github.com/<you>/dsh-sync.git -
 
 ## 5. 多设备使用流程
 
-假设两台设备 A、B 都安装同一插件、配置同一个私有仓库。核心原则：**先同步，再切换设备继续对话**。
+假设两台设备 A、B 都安装同一插件、配置同一个私有仓库。v0.2.0 默认开启近实时同步：两台设备都运行时，任意一端的改动通常会在数秒内出现在另一端，不需要重启 DSH。核心原则仍是：**不要在两端同时打开并继续同一个会话**。
 
 ### 5.1 A 设备：建立基线
 
@@ -367,7 +398,7 @@ node bin\dsh-github-sync.mjs init --repo https://github.com/<you>/dsh-sync.git -
    > - 会话：远端会话按路径映射导入，本机会话保留。
    >
    > 如果 B 上已有重要本地数据，建议先备份或确认后再同步。
-4. 同步完成后**完全重启 DSH Desktop**，侧栏才会出现导入的工作区与会话（原因见 [12. 限制](#12-限制与未验证项)）。
+4. 首次安装或升级插件后，B 需要**完全重启 DSH Desktop 一次**；此后运行期同步（包括 A 的改动、B 新建的会话/工作区）都会实时热应用，**不再需要重启**。工作区与会话通常会在 3–6 秒内出现在侧栏。
 
 ### 5.3 路径不同时：配置 `pathMappings`
 
@@ -385,7 +416,7 @@ A 的工作区在 `E:\my-workspace`，B 上放在 `D:\wwa`。在 **B** 的 `gith
 - 可以配置多条；前缀最长者优先；Windows 下大小写不敏感；
 - 也接受对象写法：`{ "E:\\my-workspace": "D:\\wwa" }`。
 
-B 首次同步会先把远端（A）的数据导入本机（同名文件远端优先，覆盖前备份），其中与路径相关的处理是：
+B 首次同步会先把远端（A）的数据导入本机（`workspace.json` 语义合并、patch 按行合并、不透明设置按 `onConflict`），其中与路径相关的处理是：
 
 1. 自动创建 `D:\wwa`（`createMissingWorkspaceDirs=true` 时）；
 2. 把 `workspace.json` 中对应工作区的 `path` 改写成 B 上的真实路径（`realpath` 后，含盘符大小写等）；
@@ -402,11 +433,21 @@ B 首次同步会先把远端（A）的数据导入本机（同名文件远端�
 
 如果 B 上也能使用同一绝对路径（例如同样有 `E:\my-workspace`，或把内容放到相同路径），则 `pathMappings` 保持 `[]` 即可，插件只做字节复制，风险最低。
 
-### 5.5 日常使用建议
+### 5.5 实时多设备行为（v0.2.0）
 
-- **切换设备前先同步**：在 A 上 `/sync sync`，到 B 上先 `/sync sync` 再继续对话。DSH 的会话日志是追加写的，同一会话在两台设备同时继续会分叉（见 [9.3](#93-同一会话在两台设备同时继续会分叉)）。
-- 自动同步默认开启（启动后约 15 秒一次、每 10 分钟一次、会话写入后约 120 秒一次），但它**不能替代“切换前手动同步”**。
-- 如果只想让一台设备推送、另一台只读，可在只读设备上把 `auto.startup`、`auto.intervalMinutes`、`auto.sessionDebounceSeconds` 分别设为 `false`、`0`、`0`，或干脆不同步该设备。
+- **工作区/会话免重启出现**：插件在 host 内通过 DSH 的 workspace registry 与 session 事件热应用同步结果，并推送到浏览器（工作区走 `workspace/follow`，会话走 `api-session/added|activity|removed`）。A 的改动在 B 上通常 3–6 秒内可见，反之亦然。
+- **工作区标题显示来源设备**：仓库里的 `meta/workspaces.json` 记录每个工作区的来源设备，侧栏标题形如 `wwa · jackfruit`。本机设置 `"realtime": { "workspaceDeviceLabel": false }` 可关闭该后缀（只阻止继续追加；已带后缀的标题需手动改名，建议在所有设备上统一关闭）。
+- **B 在 A 的工作区/会话里操作**：B 新建会话或追加事件后，A 会在数秒内收到；A 未打开该会话时文件自动更新并出现在列表中。
+- **A 已打开该会话时不会实时刷新消息**：DSH 的 live session 只读内存、没有 reload API，插件会**暂缓覆盖**（pending）；关闭并重新打开该会话（或重启 DSH）后即可看到远端更新。`/sync status` 会显示待应用会话数。
+- **同一会话双端同时写**：DSH 是单写者/连续 `seq` 契约，两端各自追加会产生分叉；插件不会自动合并分叉，默认保留本机整份日志 + 远端整份日志作为冲突副本 + 告警，需要手动 fork/取舍。避免在两台设备上同时打开并继续同一个会话。
+- **追加合并**：当一端的日志是另一端的严格前缀扩展（先同步、后继续）时，插件会直接采用较长的一份，不产生冲突、不重编号。
+
+### 5.6 日常使用建议
+
+- **避免同时打开同一个会话**：这是唯一无法完全自动化处理的场景；需要切换设备时先确保另一端已关闭该会话（或至少停止写入）。
+- 实时同步默认开启（活跃 3s / 空闲 15s 轮询、写后约 2s 触发），通常不需要手动 `/sync sync`；遇到网络异常或需要立即确认时再手动执行。
+- 如果只想让一台设备推送、另一台只读，可在只读设备上把 `realtime.enabled` 设为 `false`，或把 `auto.*` 的周期调大/关闭；也可以干脆不同步该设备。
+- 新设备首次同步、或升级插件后，记得重启 DSH 一次（仅此一次）。
 
 ---
 
@@ -416,12 +457,12 @@ B 首次同步会先把远端（A）的数据导入本机（同名文件远端�
 
 | 命令 | 作用 |
 |---|---|
-| `/sync` 或 `/sync status` | 查看状态：仓库、分支、设备、profile、配置文件、同步范围、路径映射、git、本地快照 HEAD、最近同步/错误、最近冲突、本机会话数、配置提示 |
+| `/sync` 或 `/sync status` | 查看状态：仓库、分支、设备、profile、配置文件、同步范围、实时同步模式（活跃/空闲间隔、写后延迟）、工作区设备标签、路径映射、git、本地快照 HEAD、最近同步/错误、待应用（pending）会话数、最近冲突、本机会话数、配置提示 |
 | `/sync sync` | 立即执行一次完整同步（别名：`/sync push`、`/sync pull`、`/sync now`） |
 | `/sync init <仓库地址>` | 写入/更新本机配置并立即执行首次同步 |
 | `/sync help` | 显示用法 |
 
-命令结果只显示在 UI 中，不会写入模型消息；同步过程与结果也会记录在插件日志里。
+命令结果只显示在 UI 中，不会写入模型消息；同步过程与结果也会记录在插件日志里。状态里如果出现“待应用（本机打开中的会话）：N 个”，表示有远端更新被 live 闸门暂缓，关闭对应会话后会自动应用（也可重启 DSH 立即应用）。
 
 示例输出（节选）：
 
@@ -479,7 +520,7 @@ node bin\dsh-github-sync.mjs help                  # 用法
 |---|---|---|
 | `$schema` | string / 内置 URL | 仅用于编辑器提示，可删 |
 | `version` | number / `1` | 配置格式版本，当前无迁移逻辑 |
-| `enabled` | boolean / `true` | 是否启用**自动**同步；当 `repo` 为空时会被强制视为 `false`。手动 `/sync sync` 不受此字段限制 |
+| `enabled` | boolean / `true` | 是否启用**后台同步**（近实时/自动）；当 `repo` 为空时会被强制视为 `false`。手动 `/sync sync` 不受此字段限制 |
 | `repo` | string / `""` | **必填**。GitHub 私有仓库完整 URL；支持 `https://`、`git@`、`ssh://`。不支持 `owner/name` 简写 |
 | `branch` | string / `"main"` | 同步分支，必须与远端默认分支一致 |
 | `remoteName` | string / `"origin"` | 快照仓库里的远端名，一般不用改 |
@@ -520,19 +561,41 @@ node bin\dsh-github-sync.mjs help                  # 用法
 - 路径会被规范化为绝对路径，并去掉末尾分隔符；
 - 导入时还会经过 `realpath`，让最终路径与 DSH 记录的 `workspace.path` 逐字一致。
 
-### 7.3 `auto`：自动同步时机
+### 7.3 `realtime`：近实时同步（v0.2.0 默认）
 
 | 字段 | 默认 | 范围 | 说明 |
 |---|---|---|---|
-| `auto.startup` | `true` | boolean | 插件加载后约 **15 秒**执行一次启动同步 |
-| `auto.intervalMinutes` | `10` | 0–1440 | 定时间隔（分钟）；`0` 关闭 |
-| `auto.sessionDebounceSeconds` | `120` | 0–3600 | 有会话事件后约 120 秒触发一次同步；窗口内后续事件不会重复排期；`0` 关闭 |
+| `realtime.enabled` | `true` | boolean | 开启近实时自适应轮询；设为 `false` 回退到 `auto.intervalMinutes` 定时模式 |
+| `realtime.intervalSeconds` | `3` | 1–3600 | 活跃状态下的轮询间隔（秒）。最近 90 秒内有会话活动即视为活跃 |
+| `realtime.idleIntervalSeconds` | `15` | 1–3600 | 空闲状态下的轮询间隔（秒） |
+| `realtime.activeWindowSeconds` | `90` | 5–3600 | 多久没有会话活动后从活跃切换到空闲 |
+| `realtime.pushDebounceSeconds` | `2` | 0–600 | 有会话写入后，延迟多久触发同步（秒）；`0` 表示不因写入额外触发 |
+| `realtime.workspaceDeviceLabel` | `true` | boolean | 工作区标题是否追加来源设备后缀（`wwa · jackfruit`） |
+| `realtime.mergeAppendOnlySessions` | `true` | boolean | Git 合并冲突时，若两条会话日志是严格追加/前缀关系，是否自动采用较长的一份（不重编号、不合并分叉） |
 
-自动同步与手动同步共享单飞锁：同一进程内同时只有一个同步在跑，重叠请求会被跳过并提示“另一个同步任务正在进行中”。
+行为说明：
 
-> 退出 DSH 时不会自动同步（退出阶段无法可靠等待同步完成）。请依赖定时同步，或养成在关闭 DSH 前手动执行一次 `/sync sync` 的习惯。
+- **自适应轮询**：活跃时约 3 秒一轮，空闲时约 15 秒一轮；两端都运行时，一次改动通常在数秒内同步到另一端。
+- **写后触发**：本机收到 `session/event` 后约 2 秒触发一轮同步，并与定时轮询共享单飞锁。
+- **失败退避**：连续失败时按 5s → 10s → 20s → 40s → 60s（上限 60s）指数退避并加 ±20% 抖动，避免网络故障时高频打 GitHub。
+- **无变化快路径**：本机没有新提交、远端也没有前进、且没有 pending 会话时，一轮只做 fetch/比较就返回，不执行昂贵导入。
+- **流量与限流**（估算，供容量规划参考）：空轮询约 1 KB/次；有变更时增量约 3–10 KB。Git 的 smart HTTP 端点不消耗 GitHub REST 的 5000 次/小时配额，但受**二级限流**约束；建议每设备控制在 **≤15 次/分钟**（默认配置远低于此）。多设备/大仓库可适当调大 `intervalSeconds`/`idleIntervalSeconds`，或在某台设备关闭 `realtime`。
 
-### 7.4 `scopes`：同步范围
+> `realtime.enabled` 与 `realtime.pushDebounceSeconds` 在插件加载时用于注册事件监听；修改这两项建议重启一次 DSH。其它 realtime 字段在下一轮读取。
+
+### 7.4 `auto`：启动同步与 realtime 关闭时的兜底
+
+| 字段 | 默认 | 范围 | 说明 |
+|---|---|---|---|
+| `auto.startup` | `true` | boolean | 启动后先跑一轮：realtime 开启时约 **5 秒**后；realtime 关闭时约 15 秒后 |
+| `auto.intervalMinutes` | `10` | 0–1440 | **仅 realtime 关闭时**的定时间隔（分钟）；`0` 关闭 |
+| `auto.sessionDebounceSeconds` | `120` | 0–3600 | **仅 realtime 关闭时**，会话写入后约 120 秒触发一次同步；`0` 关闭 |
+
+自动/实时同步与手动同步共享单飞锁：同一进程内同时只有一个同步在跑，重叠请求会被跳过并提示“另一个同步任务正在进行中”。
+
+> 退出 DSH 时不会自动同步（退出阶段无法可靠等待同步完成）。请依赖实时/定时同步，或养成在关闭 DSH 前手动执行一次 `/sync sync` 的习惯。
+
+### 7.5 `scopes`：同步范围
 
 | 字段 | 默认 | 对应路径 |
 |---|---|---|
@@ -551,7 +614,7 @@ node bin\dsh-github-sync.mjs help                  # 用法
 - 关闭 `sessions` 但保留 `workspaces` 时，远端工作区可能指向缺失的会话。
 - 打开 `plugins` 会同步插件清单，可能改变 B 的插件环境，非必要不建议开。
 
-### 7.5 `git`：Git 与认证
+### 7.6 `git`：Git 与认证
 
 | 字段 | 默认 | 范围 | 说明 |
 |---|---|---|---|
@@ -576,7 +639,7 @@ node bin\dsh-github-sync.mjs help                  # 用法
 ├─ github-sync.json              ← 本机配置（不同步）
 ├─ github-sync\
 │  ├─ repo\                      ← 快照 git 工作区（已 clone/fetch 的仓库内容）
-│  ├─ state.json                 ← 本机状态：managed 文件表、最近错误/历史（不同步）
+│  ├─ state.json                 ← 本机状态：managed 文件表、pendings、最近错误/历史（不同步）
 │  ├─ backups\<时间戳>\          ← 被覆盖/删除的本机文件备份
 │  └─ conflicts\<时间戳>\        ← 本机冲突副本（另一方版本）
 ├─ sessions\                     ← 对话日志
@@ -600,6 +663,8 @@ node bin\dsh-github-sync.mjs help                  # 用法
 │  └─ attachments/v1/objects/...
 ├─ profiles/desktop/
 │  └─ cordis.patch.yml           ← profile 用户设置层
+├─ meta/
+│  └─ workspaces.json            ← 工作区来源设备映射（标题「base · device」后缀）
 └─ .dsh-sync/
    └─ conflicts/<device>/<时间戳>/...   ← 只在发生合并冲突后出现
 ```
@@ -620,19 +685,30 @@ node bin\dsh-github-sync.mjs help                  # 用法
 ### 8.3 一次同步做了什么
 
 ```text
-读取配置/状态
+（realtime 每轮，默认活跃 3s / 空闲 15s 触发）
+  → 读取配置/状态（有会话写入时提前到约 2s 后触发；无变化时只 fetch 比较后返回）
   → 确保快照仓库存在（首次会 init；本机还没有任何快照提交时，先 fetch 并 reset 到远端分支，采用远端历史）
   → 首次同步（本机还没有同步状态）：先把远端内容导入本机（workspace.json 语义合并、patch 按行合并；不透明设置：全新 home 远端优先，已有本地数据则本机优先、远端版本存冲突副本），再导出本机数据
-  → 导出本机数据到快照仓库工作区
+  → 导出本机数据到快照仓库工作区（含 meta/workspaces.json 设备来源）
   → 提交（dsh-sync[<device>]: export ...）
-  → fetch 远端分支（本地落后则 fast-forward；双方分叉则 merge，冲突按策略处理）
-  → 把合并后的仓库内容导入本机（备份被覆盖/删除的文件）
-  → 再导出一次（让语义合并结果在仓库中规范化）
+  → fetch 远端分支（本地落后则 fast-forward 并导入；双方分叉则 merge，冲突按策略处理；会话严格追加关系可自动采用较长日志）
+  → 把合并后的仓库内容导入本机（live 闸门：打开中的会话暂缓为 pending；workspace.json 交给运行时 registry 热应用）
+  → 热应用：workspaceRegistry create/setTitle/attachSession；推送 api-session/added|activity|removed
+  → 再导出一次（让语义合并结果在仓库中规范化）→ 应用工作区设备标签
   → push（被拒时重新 fetch/merge，最多重试 3 轮；空仓库此时自动创建分支）
-  → 更新 state.json，清理过期备份
+  → 更新 state.json（含 pendingSessionIds），清理过期备份
 ```
 
-详细设计（数据投影规则、workspace 合并算法、会话 zstd 重写、冲突判定）见 [docs/design.md](docs/design.md)。
+详细设计（数据投影规则、workspace 合并算法、实时轮询、live 闸门、会话 zstd 重写、冲突判定）见 [docs/design.md](docs/design.md)。
+
+### 8.4 实时轮询与热应用
+
+- **轮询**：默认开启（`realtime.enabled=true`）。活跃时每约 3 秒、空闲时每约 15 秒跑一轮；最近 90 秒内有会话写入即视为活跃；连续失败指数退避到 60 秒并加抖动。关闭 realtime 后回退到 `auto.intervalMinutes` 定时模式。
+- **写后触发**：`session/event` 后约 2 秒触发一轮（`realtime.pushDebounceSeconds`），与轮询共用单飞锁。
+- **工作区热应用**：运行时存在 `workspaceRegistry` 时，插件不直接写 `workspace.json`，而是通过 registry 的 `create` / `setTitle` / `attachSession` 应用合并结果；registry 的 `domain/changed` 会驱动 Web 客户端的 `workspace/follow`，侧栏即时更新。
+- **会话热应用**：新导入的会话通过 `api-session/added` 加入列表，更新/删除分别用 `api-session/activity` / `api-session/removed`；不需要重启 DSH。
+- **live 闸门**：本机 `sessions.list()` 中正在打开的会话，其远端文件更新会被暂缓（`pendingSessionIds` 写入 `state.json`，`/sync status` 显示数量），关闭该会话后下一轮自动应用；不会覆盖 live session 的内存日志。
+- **工作区标题**：仓库 `meta/workspaces.json` 记录来源设备；导入/导出时标题追加 ` · <device>`，本机也可通过 `realtime.workspaceDeviceLabel=false` 关闭。
 
 ---
 
@@ -665,13 +741,13 @@ node bin\dsh-github-sync.mjs help                  # 用法
 
 ### 9.3 同一会话在两台设备同时继续会分叉
 
-DSH 的会话日志是“向文件末尾追加 zstd 帧”。如果 A、B 同时打开并继续同一个会话，两边都会追加自己的事件，形成两条分叉历史。Git 无法自动合并这种二进制追加：
+DSH 的会话日志是“向文件末尾追加 zstd 帧”，并依赖单写者/连续 `seq` 契约。如果 A、B 同时打开并继续同一个会话，两边都会追加自己的事件，形成两条分叉历史：
 
-- 插件不会自动合并同一会话的分叉；
-- 冲突时一方版本会保留，另一方进入冲突副本；
-- 你可能看到会话长度/内容与预期不同。
+- 插件**不会自动合并**分叉（不重编号、不拼接事件）；
+- 如果两条日志是严格追加/前缀关系（例如先同步再继续），会自动采用较长的一份，不产生冲突；
+- 真分叉时按 `onConflict` 保留一方，另一方整份日志进入冲突副本，并告警；你可能看到会话长度/内容与预期不同。
 
-**建议**：切换设备前先 `/sync sync`；不要在两台设备上同时继续同一个会话。真出现分叉时，从冲突副本人工找回内容（冲突副本就是原始 zstd 会话文件），或保留内容更完整的一份。
+**建议**：不要在两台设备上同时继续同一个会话；需要切换时先关闭另一端的该会话，再让同步完成。真出现分叉时，从冲突副本人工找回内容（冲突副本就是原始 zstd 会话文件），或保留内容更完整的一份，必要时手动 fork 成新会话。
 
 ### 9.4 回滚
 
@@ -695,6 +771,26 @@ DSH 的会话日志是“向文件末尾追加 zstd 帧”。如果 A、B 同时
 - **不写本机 DSH 数据、不创建/修改快照仓库、不提交、不 fetch/merge、不 push**；
 - 用于同步前确认同步范围与变更量。
 
+### 9.6 打开中的会话（pending）
+
+当远端更新到达，而本机对应的会话**正在 DSH 中打开**时：
+
+- 插件不会覆盖该会话文件：DSH 的 live session 只读内存日志并持有单写者租约，覆盖会破坏一致性；
+- 更新被记为 **pending**（`state.json` 的 `pendingSessionIds`，`/sync status` 显示“待应用（本机打开中的会话）：N 个”）；
+- 关闭并重新打开该会话（或重启 DSH）后，下一轮同步会自动应用远端更新；
+- A 端在 B 端打开该会话期间继续写入时，也遵循同一规则：A 看到的是自己的 live 内存状态，重新打开后才看到合并后的日志。
+
+### 9.7 会话日志的追加合并（append-only）
+
+`realtime.mergeAppendOnlySessions=true`（默认）时，Git 合并阶段对 `home/sessions/**` 的冲突会先比较两条日志：
+
+1. 字节完全相同 → 任取一份；
+2. 一条是另一条的严格字节前缀 → 取较长的一份（没有丢事件）；
+3. 否则按物理 JSONL 行逐行比较：一条是另一条的严格行前缀 → 取较长的一份；
+4. 否则判定为**分叉**（两端各自追加了不同事件）→ 不自动合并，按 `onConflict` 保留一方，另一方整份写入冲突副本并告警。
+
+该规则只处理“先同步、后继续”的正常追加；它不会重编号、不会把两条分叉历史拼成一条。
+
 ---
 
 ## 10. 常见问题
@@ -706,10 +802,14 @@ DSH 的会话日志是“向文件末尾追加 zstd 帧”。如果 A、B 同时
 | `Git 认证失败` | 确认 `DSH_SYNC_GITHUB_TOKEN` 已在 **DSH 进程**里生效（设置用户环境变量后完全重启）；确认 token 有仓库 Contents 读写权限；或改用 GCM/SSH |
 | `无法连接 GitHub（网络问题）` | 检查网络/代理；给 git 配置代理（`git config --global http.proxy ...`）；必要时用 CLI 在能联网的环境先同步 |
 | `找不到可用的 git` | 安装 Git for Windows，或在配置里设 `git.path` 为 `git.exe` 绝对路径 |
-| 同步成功但侧栏没有工作区/会话 | **重启 DSH Desktop**；DSH 启动时才读取 `workspace.json` 与扫描会话目录 |
+| 同步成功但侧栏没有工作区/会话 | 等 3–6 秒让实时轮询跑完；确认 `/sync status` 中实时同步为“开启”；若刚安装/升级插件，先重启一次 DSH；仍不显示时看插件日志中的热应用告警 |
+| 新会话/工作区不出现 | 确认两端 realtime 均开启、网络/认证正常；`/sync status` 看最近同步时间与错误；必要时手动 `/sync sync`；老版本插件需升级并重启一次 |
+| 工作区标题没有 `· 设备名` | 确认 `realtime.workspaceDeviceLabel=true`；仓库 `meta/workspaces.json` 需要至少一次来自来源设备的同步；本机旧标题会在后续同步中补齐 |
 | 会话打不开/标题消失 | 检查 `pathMappings` 是否配置正确、是否在首次同步前就配好；从 `github-sync\backups` 回滚；查看仓库中会话文件是否存在 |
+| 已打开的会话不刷新消息 | 预期行为：live session 不会被覆盖，更新在 pending 队列；关闭并重新打开该会话（或重启 DSH）后可见；`/sync status` 显示待应用数量 |
 | 仓库越来越大 | 会话 zstd 每次追加都会重写整个文件；建议使用私有仓库、定期换新仓库或清理历史（插件不内置 LFS；如自行启用 LFS，请确保所有设备一致） |
-| 两台设备同时自动同步 | 可能出现 `push rejected` / 忙；插件会自动 fetch+merge 重试 3 轮；错开自动同步时间或切换前手动同步 |
+| 两台设备同时自动同步 | 可能出现 `push rejected` / 忙；插件会自动 fetch+merge 重试 3 轮；`prefer-remote`/`keep-local` 决定冲突取舍，错开操作或关闭一端的实时同步 |
+| 实时轮询太频繁/担心限流 | 调大 `realtime.intervalSeconds` / `idleIntervalSeconds`，或把某台设备的 `realtime.enabled` 设为 `false`；Git 端点不占 REST 5000/h，但受二级限流，建议每设备 ≤15 次/分钟 |
 | 提示“另一个同步任务正在进行中” | 手动触发与自动同步重叠；等当前同步结束再试 |
 | 会话文件被占用被跳过 | 同步时 DSH 正在写该会话；下次同步会自动重试 |
 | 插件升级/卸载 | `dsh plugin --profile desktop add/remove ...` 后重启；卸载不会删除已同步数据 |
@@ -733,18 +833,19 @@ DSH 的会话日志是“向文件末尾追加 zstd 帧”。如果 A、B 同时
 
 以下内容基于当前代码与 `0.2.1-rc.2` 调研事实，如实列出：
 
-1. **导入后需要重启 DSH 才能看到工作区/会话。** DSH 在启动时读取 `workspace.json` 并在内存中维护注册表；运行期间外部写入的文件不会触发重新扫描。同步完成后请完全重启 DSH Desktop。重启前也不要在 UI 里改动工作区，否则内存状态可能覆盖刚导入的注册表。
-2. **会话文件被占用时会跳过。** 导入时若目标会话文件被 Windows 占用（DSH 正在写），该文件本次不写入，只记录告警；下次同步会再次尝试。
-3. **Windows 长路径风险。** 快照仓库已设置 `core.longpaths=true`，但系统未启用长路径支持（注册表 `LongPathsEnabled`）时，深层会话目录仍可能超过 260 字符而失败。建议仓库放在较短路径下（默认 `%USERPROFILE%\.dsh\github-sync\repo` 通常没问题）。
-4. **DSH 版本漂移。** 会话格式当前为 v4、workspace 域为 v2；插件按字节复制会话、按结构语义合并 workspace，**不校验数据格式版本**。两台设备 DSH 版本差异较大时，可能导入本机 DSH 无法识别的数据。升级 DSH 前先同步并保留备份，升级后先在一台设备上验证会话可打开。
-5. **同一会话并发继续会分叉。** 插件不做会话级自动合并，也不会为分叉会话重新分配 id；见 9.3。
-6. **退出 DSH 前不会自动同步。** DSH 退出阶段无法可靠等待同步完成；请依赖定时同步，或在关闭 DSH 前手动执行一次 `/sync sync`。
-7. **自动同步时机修改需要重载。** `auto.*` 只在插件加载时读取；修改后重启 DSH 才生效。`repo`、`scopes` 等其它配置每次操作都会重新读取。
+1. **首次安装/升级插件需要重启 DSH 一次。** 之后运行期的近实时同步、工作区/会话热应用都不需要重启。只有在运行时缺少 DSH registry/session 服务（例如纯 CLI 或最小 profile）时，才回退到文件写入，需重启才能看到工作区变化。
+2. **已打开的会话不会实时刷新消息。** DSH live session 只读内存、没有 reload API；远端更新会进入 pending，关闭并重新打开该会话（或重启 DSH）后才可见；`/sync status` 显示待应用数量。
+3. **同一会话两端同时写会分叉。** 插件只对“严格追加/前缀”日志自动取较长一份，不重编号、不自动合并分叉；分叉按 `onConflict` 保留一方，另一方整份进冲突副本。避免同时打开同一会话。若某台设备在 DSH 中重开并改写过该会话的日志，之后远端再更新会持续按 `keep-local` 冲突处理、不会自动收敛——这是有意的数据安全行为；需要在冲突设备上关闭会话、手动选择保留哪一份（或把该会话复制成新会话继续）。
+4. **Windows 长路径风险。** 快照仓库已设置 `core.longpaths=true`，但系统未启用长路径支持（注册表 `LongPathsEnabled`）时，深层会话目录仍可能超过 260 字符而失败。建议仓库放在较短路径下（默认 `%USERPROFILE%\.dsh\github-sync\repo` 通常没问题）。
+5. **DSH 版本漂移。** 会话格式当前为 v4、workspace 域为 v2；插件按字节复制会话、按结构语义合并 workspace，**不校验数据格式版本**。两台设备 DSH 版本差异较大时，可能导入本机 DSH 无法识别的数据。升级 DSH 前先同步并保留备份，升级后先在一台设备上验证会话可打开。
+6. **退出 DSH 前不会自动同步。** DSH 退出阶段无法可靠等待同步完成；请依赖实时/定时同步，或在关闭 DSH 前手动执行一次 `/sync sync`。
+7. **实时/定时配置的生效范围不同。** `realtime.intervalSeconds`/`idleIntervalSeconds`/`activeWindowSeconds`/`workspaceDeviceLabel`/`mergeAppendOnlySessions` 每轮读取，通常下一轮生效；`realtime.enabled`/`pushDebounceSeconds` 与 `auto.*` 在插件加载时建立，修改后建议重启一次 DSH。
 8. **没有跨设备锁。** 单飞锁只保证“同一台机器同一进程内不并发”；两台设备仍可能同时同步，靠 fetch/merge/push 重试收敛。
 9. **仓库会持续膨胀。** 会话日志每次追加都会让整个 zstd 文件变化，Git 每次存新版本。插件不内置 LFS 或历史清理；长期使用建议定期换新仓库（旧仓库归档）或自行清理历史。
-10. **没有图形化设置页。** 配置通过编辑 `github-sync.json`、`/sync init` 或 `github_sync` 工具完成。
-11. **本文以 Windows + DSH Desktop 为准。** 代码使用 Node 标准 API（`node:fs`、`node:zlib`、`child_process`），理论上跨平台，但 macOS/Linux 未实测。
-12. **未验证项**（来自调研资料）：Desktop 下 HMR 对 `link:` 插件的实际重载行为、Desktop 代理设置是否被 git 子进程继承、桌面插件页对 Git URL 安装的具体凭据流程。遇到问题优先用重启和 CLI 排查。
+10. **实时轮询会产生持续 Git 流量。** 空轮询约 1 KB/次、有变更约 3–10 KB/次；Git smart HTTP 不占 GitHub REST 5000 次/小时配额，但受二级限流约束。默认配置远低于每设备 15 次/分钟的建议值；多设备或大仓库可调大间隔，或关闭某台设备的 `realtime`。
+11. **没有图形化设置页。** 配置通过编辑 `github-sync.json`、`/sync init` 或 `github_sync` 工具完成。
+12. **本文以 Windows + DSH Desktop 为准。** 代码使用 Node 标准 API（`node:fs`、`node:zlib`、`child_process`），理论上跨平台，但 macOS/Linux 未实测。
+13. **未验证项**（来自调研资料）：Desktop 下 HMR 对 `link:` 插件的实际重载行为、Desktop 代理设置是否被 git 子进程继承、桌面插件页对 Git URL 安装的具体凭据流程。遇到问题优先用重启和 CLI 排查。
 
 ---
 
@@ -759,6 +860,8 @@ DSH 的会话日志是“向文件末尾追加 zstd 帧”。如果 A、B 同时
 | 备份 | `%USERPROFILE%\.dsh\github-sync\backups\<时间戳>\` |
 | 冲突副本 | `%USERPROFILE%\.dsh\github-sync\conflicts\<时间戳>\` |
 | 仓库内冲突副本 | `.dsh-sync/conflicts/<device>/<时间戳>/` |
+| 工作区来源映射（仓库） | `meta/workspaces.json` |
+| 待应用会话 | `/sync status` 的“待应用（本机打开中的会话）”一行 |
 | 插件目录 | `<插件目录>` |
 | Desktop dsh 垫片 | `%APPDATA%\DSH Desktop\host-commands\desktop\generations\<hash>\bin\dsh.cmd` |
 | 查看快照历史 | `git -C "$env:USERPROFILE\.dsh\github-sync\repo" log --oneline -20` |
@@ -769,8 +872,8 @@ DSH 的会话日志是“向文件末尾追加 zstd 帧”。如果 A、B 同时
 
 ## 14. 文档索引
 
-- [安装与首次配置](docs/installation.md) — PAT、Windows 环境变量、两种安装方式、重启、升级/卸载
-- [配置参考](docs/configuration.md) — 所有字段、默认值、范围、路径映射与 scope 细节
-- [故障排查](docs/troubleshooting.md) — 认证、网络、侧栏不显示、回滚、仓库膨胀、多设备冲突
-- [设计说明](docs/design.md) — 架构、数据投影、workspace 合并、会话 zstd 重写、冲突模型、限制
+- [安装与首次配置](docs/installation.md) — PAT、Windows 环境变量、三种安装方式、重启一次、升级/卸载
+- [配置参考](docs/configuration.md) — 所有字段（含实时同步 `realtime`）、默认值、范围、路径映射与 scope 细节
+- [故障排查](docs/troubleshooting.md) — 认证、网络、实时同步/新会话不出现、pending、标题设备名、回滚、仓库膨胀、多设备冲突
+- [设计说明](docs/design.md) — 架构、实时轮询与热应用、数据投影、workspace 合并、会话 zstd/追加合并、冲突模型、限制
 - [English README](README.md)

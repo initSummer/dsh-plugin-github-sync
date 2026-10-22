@@ -10,15 +10,18 @@ import { test } from 'node:test'
 import { loadConfig, mergeConfig, defaultConfig, normalizeConfig, readToken, redactRemote } from '../../lib/config.js'
 import { encodeSegment, projectKey, PathMapper, pathKey } from '../../lib/paths.js'
 import {
+  compareSessionLogs,
   encodeZstdFrame,
   readSessionHeaderBytes,
   rewritePathText,
   rewriteSessionBytes,
   scanZstdFrames,
 } from '../../lib/sessions.js'
+import { decorateWorkspaceTitles, stripDeviceSuffix } from '../../lib/devices.js'
 import { mergeWorkspaceDocs, validateWorkspaceDoc, emptyWorkspaceDoc } from '../../lib/workspace.js'
 import { filterOwnPatchRows, extractOwnPatchRows, appendPatchRows, splitPatchEntries, mergePatchTexts } from '../../lib/patch.js'
 import { initializeConfig } from '../../lib/sync.js'
+import { applyRuntimeUpdates } from '../../lib/runtime.js'
 import { decodeFrames, decodeHeader, makeScratch, makeSessionBytes, removeScratch } from '../helpers.js'
 
 test('paths: session segment and project keys match the DSH backend', () => {
@@ -312,4 +315,107 @@ test('config: default scopes include settings, sessions, workspaces, skills and 
   assert.equal(config.scopes.plugins, false)
   assert.equal(config.onConflict, 'keep-local')
   assert.equal(config.enabled, false, 'no repo means disabled')
+  assert.equal(config.realtime.enabled, true)
+  assert.equal(config.realtime.intervalSeconds, 3)
+  assert.equal(config.realtime.workspaceDeviceLabel, true)
+})
+
+test('sessions: compareSessionLogs detects append-only extension and divergence', () => {
+  const base = makeSessionBytes({ id: 'session-cmp', cwd: 'E:\\work' })
+  const extended = Buffer.concat([
+    base,
+    encodeZstdFrame(`${JSON.stringify({ type: 'user/message', seq: 9, time: Date.now(), data: { message: { content: [{ type: 'text', text: 'B 追加' }] } } })}\n`),
+  ])
+  const other = Buffer.concat([
+    base,
+    encodeZstdFrame(`${JSON.stringify({ type: 'user/message', seq: 9, time: Date.now(), data: { message: { content: [{ type: 'text', text: 'A 追加' }] } } })}\n`),
+  ])
+  assert.equal(compareSessionLogs(base, extended).relation, 'left-prefix')
+  assert.equal(compareSessionLogs(extended, base).relation, 'right-prefix')
+  assert.equal(compareSessionLogs(extended, extended).relation, 'equal')
+  const diverged = compareSessionLogs(extended, other)
+  assert.equal(diverged.relation, 'diverged')
+  assert.ok(diverged.commonEvents >= 0)
+})
+
+test('runtime: hot-applies workspaces and emits client session events', async () => {
+  const calls = []
+  const emitted = []
+  const entity = {
+    id: 'w-new',
+    path: 'E:\\wwa',
+    title: 'wwa · device-a',
+    sessionIds: [],
+    attachSession: async (sessionId) => { calls.push(['attach', sessionId]) },
+    setTitle: async (title) => { calls.push(['title', title]) },
+  }
+  const registry = {
+    list: () => [],
+    create: async (workspacePath, title) => {
+      calls.push(['create', workspacePath, title])
+      return entity
+    },
+  }
+  const sessionController = {
+    list: async () => [{
+      sessionId: 'session-imported',
+      updatedAt: 42,
+      running: false,
+      blank: false,
+      agentAvailable: false,
+    }],
+  }
+  const ctx = {
+    get: (name) => ({ workspaceRegistry: registry, sessionController })[name],
+    emit: (name, ...args) => { emitted.push([name, ...args]) },
+  }
+  const doc = {
+    unit: { name: 'workspace', version: 2 },
+    global: { initialized: true, defaultWorkspaceId: 'w-new', workspaceIds: ['w-new'], archivedSessionIds: [], pinnedSessionIds: [] },
+    tables: {
+      workspaces: {
+        'w-new': {
+          path: 'E:\\wwa',
+          title: 'wwa · device-a',
+          sessionIds: ['session-imported'],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    },
+  }
+  const applied = await applyRuntimeUpdates({
+    ctx,
+    config: { deviceName: 'b', realtime: { workspaceDeviceLabel: true } },
+    dshHome: 'C:\\x',
+    result: {
+      workspaceChanged: true,
+      localWorkspaceDoc: doc,
+      newSessionIds: ['session-imported'],
+      updatedSessionIds: [],
+      deletedSessionIds: ['session-gone'],
+      sessionSummaries: {},
+    },
+  })
+  assert.equal(applied.applied, true)
+  assert.deepEqual(calls[0], ['create', 'E:\\wwa', 'wwa · device-a'])
+  assert.ok(calls.some((call) => call[0] === 'attach' && call[1] === 'session-imported'))
+  assert.ok(emitted.some(([name, summary]) => name === 'api-session/added' && summary.sessionId === 'session-imported'))
+  assert.ok(emitted.some(([name, id]) => name === 'api-session/removed' && id === 'session-gone'))
+})
+
+test('devices: workspace titles are decorated with and stripped of the origin device', () => {
+  const doc = {
+    unit: { name: 'workspace', version: 2 },
+    global: { initialized: true, defaultWorkspaceId: 'a', workspaceIds: ['a'], archivedSessionIds: [], pinnedSessionIds: [] },
+    tables: { workspaces: { a: { path: 'E:\\wwa', title: 'wwa', sessionIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' } } },
+  }
+  const origins = new Map([[pathKey('E:\\wwa'), 'jackfruit']])
+  const decorated = decorateWorkspaceTitles(doc, origins, { canonicalizePath: (value) => value })
+  assert.equal(decorated.changed, true)
+  assert.equal(decorated.doc.tables.workspaces.a.title, 'wwa · jackfruit')
+  assert.equal(stripDeviceSuffix('wwa · jackfruit', 'jackfruit'), 'wwa')
+  const again = decorateWorkspaceTitles(decorated.doc, origins, { canonicalizePath: (value) => value })
+  assert.equal(again.changed, false, 'decoration is idempotent')
+  assert.equal(decorateWorkspaceTitles(decorated.doc, origins, { canonicalizePath: (value) => value, enabled: false }).doc.tables.workspaces.a.title, 'wwa · jackfruit')
 })
